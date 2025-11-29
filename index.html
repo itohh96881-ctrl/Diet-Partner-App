@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Diet Partner App</title>
+    <title>Diet Partner App (Cloud Sync)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Babel for JSX -->
@@ -35,6 +35,31 @@
 <body class="bg-slate-50">
     <div id="root"></div>
 
+    <script type="module">
+        // Firebase SDKs
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { getFirestore, collection, doc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+
+        // グローバル変数から設定を読み込み
+        const firebaseConfig = JSON.parse(window.__firebase_config || '{}');
+        const appId = window.__app_id || 'diet-partner-default';
+        const initialAuthToken = window.__initial_auth_token;
+
+        // Firebase初期化
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // Reactコンポーネントで使用するためにwindowオブジェクトに公開（またはコンテキスト経由でも良いが簡易的に）
+        window.db = db;
+        window.auth = auth;
+        window.appId = appId;
+        window.initialAuthToken = initialAuthToken;
+        window.signInWithCustomToken = signInWithCustomToken;
+        window.signInAnonymously = signInAnonymously;
+    </script>
+
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect, useMemo, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
@@ -42,147 +67,36 @@
             Activity, Utensils, Bed, CheckCircle, Scale, Calendar, Trophy, 
             ChevronRight, RefreshCw, AlertCircle, TrendingDown, Moon, 
             Camera, Loader2, Sparkles, Coffee, Sun, Sunset, Flame, Ban, 
-            Undo2, Award, Star, Settings, X, Key, BrainCircuit, ImageIcon, Trash2
+            Undo2, Award, Star, Settings, X, Key, BrainCircuit, ImageIcon, Trash2, Cloud, CloudOff
         } from 'lucide-react';
 
-        // ロードマップに基づくベースプラン（APIがない場合やエラー時のフォールバック用）
+        // Firebase関連の関数はグローバルから取得
+        const { db, auth, appId, initialAuthToken, signInWithCustomToken, signInAnonymously } = window;
+        import { onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { collection, doc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+
+        // ロードマップに基づくベースプラン
         const WEEKLY_PLAN_BASE = {
-            0: { // 日曜日
-                day: '日曜日',
-                type: 'adjustment',
-                title: '調整日 & チートミール',
-                targetCalories: 1600,
-                workout: '完全休養 または 軽い散歩',
-                workoutDetail: '今日は心と体を休める日です。副交感神経を優位にしましょう。\n【推奨】\n・20分程度の散歩（日光を浴びる）\n・ストレッチやフォームローラーでケア',
-                sleepAdvice: '明日の仕事に備え、就寝90分前の入浴で深部体温を上げましょう。',
-                dietDetail: {
-                breakfast: '軽め（フルーツ、ヨーグルト、プロテイン）',
-                lunch: '【チートミール】好きなものを食べてOK！心の栄養補給です。',
-                dinner: '調整食（豆腐サラダ、野菜スープなど炭水化物抜き）',
-                focus: '「1食は自由に、他は質素に」。1日のトータルカロリーが爆発しないよう調整。'
-                },
-                color: 'bg-green-100 border-green-500 text-green-800'
-            },
-            1: { // 月曜日
-                day: '月曜日',
-                type: 'home',
-                title: '自宅トレ(軽) & 仕事モード',
-                targetCalories: 1750,
-                workout: '仕事の合間にスクワット・ストレッチ',
-                workoutDetail: '週の始まり。在宅ワークの「座りっぱなし」を解除します。\n【ノルマ】\n・ポモドーロ・スクワット：50分仕事→その場でスクワット10回\n・カーフレイズ（爪先立ち）：歯磨き中などに20回',
-                sleepAdvice: 'ブルーライトは21時以降カット。読書などで脳をクールダウン。',
-                dietDetail: {
-                breakfast: '和食推奨（納豆ご飯、卵、味噌汁）',
-                lunch: '定食スタイル（焼き魚やお刺身）。丼ものは避ける。',
-                dinner: '主菜（肉/魚）＋たっぷりのサラダ。白米は半膳以下に。',
-                focus: '週末のリセット日。水分を多め（2L以上）に摂ってむくみを解消。'
-                },
-                color: 'bg-blue-100 border-blue-500 text-blue-800'
-            },
-            2: { // 火曜日
-                day: '火曜日',
-                type: 'gym',
-                title: 'ジム (筋トレA: 脚・胸)',
-                targetCalories: 1950,
-                workout: '下半身・胸メイン ＋ 有酸素20分',
-                workoutDetail: '大きな筋肉を鍛えて代謝を上げます。\n1. レッグプレス 10回×3セット（ギリギリ上がる重さ）\n2. チェストプレス 10回×3セット\n3. 傾斜ウォーキング 20分（スマホ見ずに早歩き）',
-                sleepAdvice: '筋トレで興奮した神経を鎮めるため、マグネシウム（海藻類やサプリ）を摂取してリラックス。',
-                dietDetail: {
-                breakfast: 'オートミールや全粒粉パンなど、低GI炭水化物をしっかり。',
-                lunch: '【トレ前】おにぎり1個＋サラダチキンでエネルギー確保。',
-                dinner: '【トレ後】赤身肉（牛・豚ヒレ）やカツオなど、鉄分・BCAA豊富なタンパク質。',
-                focus: 'トレーニング前後の栄養補給が鍵。空腹でジムに行かないこと。'
-                },
-                color: 'bg-red-100 border-red-500 text-red-800'
-            },
-            3: { // 水曜日
-                day: '水曜日',
-                type: 'rest',
-                title: '完全休養日',
-                targetCalories: 1600,
-                workout: 'オフ（睡眠優先）',
-                workoutDetail: '筋肉の超回復を促す日です。トレーニングは禁止。\n早く仕事を切り上げて、リラックスすることに集中してください。',
-                sleepAdvice: '週の真ん中で「睡眠負債」を返済。目標7.5時間睡眠。',
-                dietDetail: {
-                breakfast: 'スムージーや野菜スープなど消化に良いもの。',
-                lunch: '蕎麦（十割推奨）やうどん＋卵・わかめトッピング。',
-                dinner: '鍋物やポトフ。温かい野菜料理で内臓を温める。',
-                focus: '内臓も休める日。腹八分目を厳守し、胃腸の負担を減らす。'
-                },
-                color: 'bg-indigo-100 border-indigo-500 text-indigo-800'
-            },
-            4: { // 木曜日
-                day: '木曜日',
-                type: 'home',
-                title: '自宅トレ(軽)',
-                targetCalories: 1750,
-                workout: '散歩 または ストレッチ',
-                workoutDetail: '中だるみ防止デー。\n・朝イチまたは夕方に20分の早歩き散歩\n・YouTubeを見ながら10分間の全身ストレッチ',
-                sleepAdvice: '寝室の温度・湿度を最適化。アロマなどで香りのリラックスを導入。',
-                dietDetail: {
-                breakfast: '目玉焼きとブロッコリー。タンパク質を固定。',
-                lunch: 'コンビニなら：ブランパン＋サラダチキン＋野菜ジュース（砂糖不使用）。',
-                dinner: '白身魚や鶏むね肉の蒸し料理。脂質を抑える。',
-                focus: '間食の誘惑に注意。お菓子ではなく「素焼きナッツ」か「カカオ70%チョコ」を。'
-                },
-                color: 'bg-blue-100 border-blue-500 text-blue-800'
-            },
-            5: { // 金曜日
-                day: '金曜日',
-                type: 'gym',
-                title: 'ジム (筋トレB: 背中・腹)',
-                targetCalories: 1950,
-                workout: '背中・腹筋メイン ＋ 有酸素20分',
-                workoutDetail: '後ろ姿とウエストを作ります。\n1. ラットプルダウン 10回×3セット（胸を張って引く）\n2. アブドミナルクランチ 15回×3セット\n3. 傾斜ウォーキング 20分',
-                sleepAdvice: '週末の高揚感で夜更かししないよう注意。起床時間は土日も変えないこと。',
-                dietDetail: {
-                breakfast: 'しっかり食べる。卵2個＋ご飯＋納豆。',
-                lunch: 'パスタやラーメンは避ける。定食屋で「ご飯少なめ」オーダー。',
-                dinner: '居酒屋メニュー風（枝豆、冷奴、焼き鳥塩）。お酒はハイボール1-2杯まで。',
-                focus: '金曜夜の飲み過ぎ・食べ過ぎを回避。蒸留酒とおつまみの質で勝負。'
-                },
-                color: 'bg-red-100 border-red-500 text-red-800'
-            },
-            6: { // 土曜日
-                day: '土曜日',
-                type: 'cardio',
-                title: '有酸素強化 (ラン/HIIT)',
-                targetCalories: 1850,
-                workout: 'ランニング または HIIT',
-                workoutDetail: '脂肪を燃やし尽くす日。\n【選択A】ランニング30分（心拍数130-140程度）\n【選択B】HIIT（バーピージャンプ20秒＋休憩10秒）×8セット',
-                sleepAdvice: '運動の疲れで深く眠れるはず。寝具を整えて質の高い睡眠を。',
-                dietDetail: {
-                breakfast: 'バナナ＋プロテイン。運動前のエネルギー補給。',
-                lunch: '運動後なので炭水化物をしっかり摂ってOK（パスタ、お寿司など）。',
-                dinner: 'きのこ料理や海藻サラダ。食物繊維で腸内環境を整える。',
-                focus: '運動で消費した分、良質なタンパク質と水分をたっぷり補給。'
-                },
-                color: 'bg-orange-100 border-orange-500 text-orange-800'
-            }
+            0: { day: '日曜日', type: 'adjustment', title: '調整日 & チートミール', targetCalories: 1600, workout: '完全休養 または 軽い散歩', workoutDetail: '今日は心と体を休める日です。', sleepAdvice: '明日の仕事に備え早めに就寝。', dietDetail: { breakfast: '軽め', lunch: 'チートミールOK', dinner: '調整食', focus: '1食は自由に' }, color: 'bg-green-100 border-green-500 text-green-800' },
+            1: { day: '月曜日', type: 'home', title: '自宅トレ(軽) & 仕事モード', targetCalories: 1750, workout: 'スクワット・ストレッチ', workoutDetail: 'ポモドーロ・スクワット：50分仕事→10回スクワット', sleepAdvice: '23時までには就寝。', dietDetail: { breakfast: '和食推奨', lunch: '定食スタイル', dinner: '主菜＋サラダ', focus: '週末のリセット' }, color: 'bg-blue-100 border-blue-500 text-blue-800' },
+            2: { day: '火曜日', type: 'gym', title: 'ジム (筋トレA: 脚・胸)', targetCalories: 1950, workout: '下半身・胸メイン＋有酸素', workoutDetail: 'レッグプレス、チェストプレス各10回×3', sleepAdvice: 'マグネシウムを摂取してリラックス。', dietDetail: { breakfast: 'オートミール等', lunch: 'トレ前におにぎり', dinner: '赤身肉でリカバリー', focus: 'トレ前後の栄養補給' }, color: 'bg-red-100 border-red-500 text-red-800' },
+            3: { day: '水曜日', type: 'rest', title: '完全休養日', targetCalories: 1600, workout: 'オフ（睡眠優先）', workoutDetail: 'トレーニング禁止。ストレッチのみOK。', sleepAdvice: '目標7.5時間睡眠。', dietDetail: { breakfast: 'スムージー等', lunch: '蕎麦やうどん', dinner: '鍋物やポトフ', focus: '内臓を休める' }, color: 'bg-indigo-100 border-indigo-500 text-indigo-800' },
+            4: { day: '木曜日', type: 'home', title: '自宅トレ(軽)', targetCalories: 1750, workout: '散歩 または ストレッチ', workoutDetail: '朝イチまたは夕方に20分の早歩き', sleepAdvice: 'アロマなどでリラックス。', dietDetail: { breakfast: '卵とブロッコリー', lunch: 'コンビニならサラダチキン', dinner: '白身魚', focus: '間食に注意' }, color: 'bg-blue-100 border-blue-500 text-blue-800' },
+            5: { day: '金曜日', type: 'gym', title: 'ジム (筋トレB: 背中・腹)', targetCalories: 1950, workout: '背中・腹筋メイン＋有酸素', workoutDetail: 'ラットプルダウン、クランチ', sleepAdvice: '夜更かし注意。', dietDetail: { breakfast: 'しっかり食べる', lunch: 'パスタ等は避ける', dinner: '居酒屋メニュー風（ヘルシーに）', focus: 'お酒は蒸留酒' }, color: 'bg-red-100 border-red-500 text-red-800' },
+            6: { day: '土曜日', type: 'cardio', title: '有酸素強化 (ラン/HIIT)', targetCalories: 1850, workout: 'ランニング または HIIT', workoutDetail: '脂肪燃焼デー。ラン30分 or HIIT 4分', sleepAdvice: '運動の疲れで深く眠る。', dietDetail: { breakfast: 'バナナ＋プロテイン', lunch: '炭水化物OK', dinner: 'きのこ・海藻', focus: '水分をたっぷり' }, color: 'bg-orange-100 border-orange-500 text-orange-800' }
         };
 
-        const INITIAL_GOAL = {
-            weight: 65.0,
-            bfp: 15.0,
-            startWeight: 84.6,
-            startBfp: 20.4
-        };
+        const INITIAL_GOAL = { weight: 65.0, bfp: 15.0, startWeight: 84.6, startBfp: 20.4 };
 
         // 簡易グラフコンポーネント
         const SimpleChart = ({ data, dataKey, color, label, unit, domain }) => {
             if (!data || data.length < 2) {
-                return (
-                <div className="h-32 bg-slate-50 rounded-lg flex items-center justify-center border border-slate-100 text-slate-400 text-sm">
-                    データが蓄積されるとグラフが表示されます
-                </div>
-                );
+                return <div className="h-32 bg-slate-50 rounded-lg flex items-center justify-center border border-slate-100 text-slate-400 text-sm">データ不足</div>;
             }
-
             const values = data.map(d => d[dataKey]);
             const min = Math.min(...values, domain[0]);
             const max = Math.max(...values, domain[1]);
             const range = max - min || 1;
-            
             const points = data.map((d, i) => {
                 const x = (i / (data.length - 1)) * 100;
                 const y = 100 - ((d[dataKey] - min) / range) * 100;
@@ -191,76 +105,35 @@
 
             return (
                 <div className="mb-4">
-                <div className="flex justify-between text-xs text-slate-500 mb-1 font-medium">
-                    <span>{label}推移</span>
-                    <span>Current: {values[values.length - 1]}{unit}</span>
-                </div>
-                <div className="h-24 w-full bg-white border border-slate-100 rounded-lg relative overflow-hidden p-2">
-                    <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full overflow-visible">
-                    <line x1="0" y1="0" x2="100" y2="0" stroke="#f1f5f9" strokeWidth="1" />
-                    <line x1="0" y1="50" x2="100" y2="50" stroke="#f1f5f9" strokeWidth="1" />
-                    <line x1="0" y1="100" x2="100" y2="100" stroke="#f1f5f9" strokeWidth="1" />
-                    <polyline fill="none" stroke={color} strokeWidth="2" points={points} vectorEffect="non-scaling-stroke" />
-                    {data.map((d, i) => {
-                        const x = (i / (data.length - 1)) * 100;
-                        const y = 100 - ((d[dataKey] - min) / range) * 100;
-                        return (
-                        <circle key={i} cx={x} cy={y} r="1.5" fill={color} className="opacity-80" />
-                        );
-                    })}
-                    </svg>
-                </div>
+                    <div className="flex justify-between text-xs text-slate-500 mb-1 font-medium">
+                        <span>{label}推移</span>
+                        <span>Current: {values[values.length - 1]}{unit}</span>
+                    </div>
+                    <div className="h-24 w-full bg-white border border-slate-100 rounded-lg relative overflow-hidden p-2">
+                        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full overflow-visible">
+                            <polyline fill="none" stroke={color} strokeWidth="2" points={points} vectorEffect="non-scaling-stroke" />
+                            {data.map((d, i) => <circle key={i} cx={(i / (data.length - 1)) * 100} cy={100 - ((d[dataKey] - min) / range) * 100} r="1.5" fill={color} className="opacity-80" />)}
+                        </svg>
+                    </div>
                 </div>
             );
         };
 
         // メインコンポーネント
         function DietPartnerApp() {
+            const [user, setUser] = useState(null);
             const [today, setToday] = useState(new Date());
-            
-            // APIキー管理
-            const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || "");
-            const [showSettings, setShowSettings] = useState(false);
-            const [tempApiKey, setTempApiKey] = useState("");
+            const [loading, setLoading] = useState(true);
+            const [syncError, setSyncError] = useState(false);
 
-            // AI生成プランの状態
-            const [aiGeneratedPlan, setAiGeneratedPlan] = useState(() => {
-                const saved = localStorage.getItem('diet_ai_plan');
-                if (saved) {
-                    const parsed = JSON.parse(saved);
-                    // 日付が変わっていれば破棄
-                    if (new Date(parsed.date).toDateString() === new Date().toDateString()) {
-                        return parsed.plan;
-                    }
-                }
-                return null;
-            });
-            const [isPlanLoading, setIsPlanLoading] = useState(false);
-
-            // 履歴データの管理
-            const [history, setHistory] = useState(() => {
-                const saved = localStorage.getItem('diet_history');
-                return saved ? JSON.parse(saved) : [
+            // データステート
+            const [profile, setProfile] = useState({ weight: 84.6, bfp: 20.4, apiKey: "" });
+            const [history, setHistory] = useState([
                 { date: new Date(Date.now() - 86400000 * 2).toISOString(), weight: 85.0, bfp: 20.8 },
                 { date: new Date(Date.now() - 86400000).toISOString(), weight: 84.8, bfp: 20.5 },
                 { date: new Date().toISOString(), weight: 84.6, bfp: 20.4 }
-                ];
-            });
-
-            const [currentStatus, setCurrentStatus] = useState(() => {
-                const saved = localStorage.getItem('diet_status');
-                return saved ? JSON.parse(saved) : { weight: 84.6, bfp: 20.4 };
-            });
-            
-            const [dailyCheckIn, setDailyCheckIn] = useState(() => {
-                const saved = localStorage.getItem('diet_daily_checkin');
-                if (saved) {
-                const parsed = JSON.parse(saved);
-                const savedDate = new Date(parsed.date).toDateString();
-                const todayDate = new Date().toDateString();
-                if (savedDate === todayDate) return parsed;
-                }
-                return {
+            ]);
+            const [dailyData, setDailyData] = useState({
                 date: new Date().toISOString(),
                 sleepHours: 6,
                 feeling: 'normal',
@@ -268,138 +141,174 @@
                 tasks: { meal: false, workout: false, sleep: false },
                 isFinished: false,
                 dailyFeedback: null,
-                dailyImage: null
-                };
+                // 画像は容量制限のためFirestoreには保存せず、メモリ内のみとする（リロードで消える仕様）
+                dailyImage: null 
             });
-
-            const [activeMeal, setActiveMeal] = useState('breakfast');
-            const [mealLogs, setMealLogs] = useState(() => {
-                const saved = localStorage.getItem('diet_meal_logs');
-                if (saved) {
-                const parsed = JSON.parse(saved);
-                const savedDate = parsed.date;
-                const todayDate = new Date().toDateString();
-                if (savedDate === todayDate) return parsed.logs;
-                }
-                return {
+            const [mealLogs, setMealLogs] = useState({
                 breakfast: { image: null, result: null, skipped: false },
                 lunch: { image: null, result: null, skipped: false },
                 dinner: { image: null, result: null, skipped: false }
-                };
             });
+            const [aiPlan, setAiPlan] = useState(null);
 
+            const [showSettings, setShowSettings] = useState(false);
+            const [tempApiKey, setTempApiKey] = useState("");
             const [analyzing, setAnalyzing] = useState(false);
             const [finishing, setFinishing] = useState(false);
+            const [isPlanLoading, setIsPlanLoading] = useState(false);
             const fileInputRef = useRef(null);
 
-            // AIプランがあればそれを優先、なければベースプランを使用
+            // 今日の日付文字列
+            const todayStr = useMemo(() => new Date().toDateString(), [today]);
+            const todayDocId = useMemo(() => {
+                const d = new Date();
+                return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            }, [today]);
+
             const plan = useMemo(() => {
-                if (aiGeneratedPlan) return aiGeneratedPlan;
-                const base = WEEKLY_PLAN_BASE[today.getDay()];
-                // ベースプランにdayプロパティなどが含まれているのでそのまま返す
-                return base;
-            }, [today, aiGeneratedPlan]);
+                if (aiPlan) return aiPlan;
+                return WEEKLY_PLAN_BASE[today.getDay()];
+            }, [today, aiPlan]);
 
-            useEffect(() => { localStorage.setItem('diet_status', JSON.stringify(currentStatus)); }, [currentStatus]);
-            
-            // LocalStorageへの保存（画像データが大きすぎるとエラーになるためtry-catch）
-            useEffect(() => { 
-                try {
-                    localStorage.setItem('diet_daily_checkin', JSON.stringify(dailyCheckIn)); 
-                } catch(e) {
-                    console.warn("Storage quota exceeded, dailyCheckIn not saved fully", e);
-                    // 画像を除外して保存を試みる
-                    const safeCheckIn = {...dailyCheckIn, dailyImage: null};
-                    localStorage.setItem('diet_daily_checkin', JSON.stringify(safeCheckIn)); 
-                }
-            }, [dailyCheckIn]);
-
-            useEffect(() => { localStorage.setItem('diet_history', JSON.stringify(history)); }, [history]);
-            useEffect(() => { 
-                try {
-                    localStorage.setItem('diet_meal_logs', JSON.stringify({
-                        date: new Date().toDateString(),
-                        logs: mealLogs
-                    })); 
-                } catch(e) {
-                    console.warn("Storage quota exceeded for meal logs", e);
-                }
-            }, [mealLogs]);
+            // 認証と初期化
             useEffect(() => {
-                if (aiGeneratedPlan) {
-                    localStorage.setItem('diet_ai_plan', JSON.stringify({
-                        date: new Date().toISOString(),
-                        plan: aiGeneratedPlan
-                    }));
-                }
-            }, [aiGeneratedPlan]);
+                const initAuth = async () => {
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) {
+                        console.error("Auth failed", error);
+                        setSyncError(true);
+                    }
+                };
+                initAuth();
 
-            // APIキー保存処理
+                const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+                    setUser(currentUser);
+                    if (!currentUser) setLoading(false);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            // Firestore データ同期
+            useEffect(() => {
+                if (!user) return;
+
+                const userDocRef = (col) => doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', col);
+
+                // プロファイル監視
+                const unsubProfile = onSnapshot(userDocRef('profile'), (docSnap) => {
+                    if (docSnap.exists()) {
+                        setProfile(prev => ({ ...prev, ...docSnap.data() }));
+                    }
+                }, (err) => { console.error(err); setSyncError(true); });
+
+                // 履歴監視
+                const unsubHistory = onSnapshot(userDocRef('history'), (docSnap) => {
+                    if (docSnap.exists()) {
+                        setHistory(docSnap.data().records || []);
+                    }
+                });
+
+                // 今日のデータ監視
+                const unsubDaily = onSnapshot(userDocRef(todayDocId), (docSnap) => {
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        setDailyData(prev => ({ ...prev, ...data.checkIn }));
+                        if (data.mealLogs) setMealLogs(data.mealLogs);
+                        if (data.aiPlan) setAiPlan(data.aiPlan);
+                    } else {
+                        // 日付が変わってデータがない場合のリセットはここで行われる
+                        setLoading(false); 
+                    }
+                    setLoading(false);
+                });
+
+                return () => {
+                    unsubProfile();
+                    unsubHistory();
+                    unsubDaily();
+                };
+            }, [user, todayDocId]);
+
+            // データ保存ヘルパー
+            const saveDailyData = async (newCheckIn, newMealLogs, newAiPlan) => {
+                if (!user) return;
+                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', todayDocId);
+                // 画像データ(Base64)は重いので保存から除外
+                const cleanCheckIn = { ...newCheckIn, dailyImage: null }; 
+                const cleanMealLogs = {};
+                Object.keys(newMealLogs || mealLogs).forEach(key => {
+                    cleanMealLogs[key] = { 
+                        ...newMealLogs?.[key] || mealLogs[key], 
+                        image: null // 食事画像もDBには保存しない
+                    };
+                });
+
+                await setDoc(docRef, {
+                    checkIn: cleanCheckIn,
+                    mealLogs: cleanMealLogs,
+                    aiPlan: newAiPlan || aiPlan,
+                    updatedAt: new Date().toISOString()
+                }, { merge: true });
+            };
+
+            const saveProfile = async (newProfile) => {
+                if (!user) return;
+                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', 'profile');
+                await setDoc(docRef, newProfile, { merge: true });
+            };
+
+            const saveHistory = async (newHistory) => {
+                if (!user) return;
+                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', 'history');
+                await setDoc(docRef, { records: newHistory }, { merge: true });
+            };
+
+            // ハンドラー群
             const handleSaveApiKey = () => {
-                localStorage.setItem('gemini_api_key', tempApiKey);
-                setApiKey(tempApiKey);
+                const newProfile = { ...profile, apiKey: tempApiKey };
+                setProfile(newProfile);
+                saveProfile(newProfile);
                 setShowSettings(false);
-                alert("APIキーを保存しました！");
+                alert("APIキーをクラウドに保存しました！");
             };
 
             const openSettings = () => {
-                setTempApiKey(apiKey);
+                setTempApiKey(profile.apiKey || "");
                 setShowSettings(true);
             };
 
             const handleStatusChange = (e) => {
                 const { name, value } = e.target;
-                setCurrentStatus(prev => ({ ...prev, [name]: parseFloat(value) }));
+                setProfile(prev => ({ ...prev, [name]: parseFloat(value) }));
             };
 
-            // 今日の最適プランを生成する関数
+            // 今日の最適プランを生成
             const generateDailyPlan = async (status, sleep) => {
-                if (!apiKey) return; // キーがなければベースプランのまま
+                if (!profile.apiKey) return;
                 setIsPlanLoading(true);
 
                 const dayOfWeek = ['日', '月', '火', '水', '木', '金', '土'][today.getDay()];
-                // 直近の履歴文字列を作成
                 const recentHistory = history.slice(-3).map(h => 
                     `- ${new Date(h.date).toLocaleDateString()}: ${h.weight}kg`
                 ).join('\n');
 
                 const prompt = `
                     あなたはプロのダイエットインストラクターです。
-                    クライアントの今日のコンディションと過去の履歴に基づいて、今日1日の最適なスケジュール（運動・食事・目標カロリー）を動的に作成してください。
-
-                    【クライアント情報】
-                    - 目標: 65kg / 15% (現在: ${status.weight}kg / ${status.bfp}%)
-                    - 今日の曜日: ${dayOfWeek}曜日
-                    - 昨晩の睡眠: ${sleep}時間
-                    - 直近の体重推移:
-                    ${recentHistory}
-
-                    【指示】
-                    - 睡眠時間が6時間未満なら、高強度の運動は避け、リカバリー優先のプランにしてください。
-                    - 体重が増加・停滞傾向なら、食事の引き締めや運動の質を高めるアドバイスを。
-                    - 順調に減っていれば、さらに加速させるか、継続を促すプランを。
-                    - JSON形式のみで出力してください。Markdownのコードブロックは不要です。
-
-                    【JSONフォーマット】
-                    {
-                        "day": "${dayOfWeek}曜日",
-                        "title": "今日のテーマ（例：睡眠不足解消＆軽めストレッチ）",
-                        "type": "rest" | "home" | "gym" | "cardio" | "adjustment",
-                        "targetCalories": 1800,
-                        "workout": "メインの運動指示",
-                        "workoutDetail": "運動の詳細なやり方や回数",
-                        "sleepAdvice": "今晩の睡眠アドバイス",
-                        "dietDetail": {
-                            "breakfast": "朝食の提案",
-                            "lunch": "昼食の提案",
-                            "dinner": "夕食の提案",
-                            "focus": "今日の食事ルール（一言）"
-                        },
-                        "color": "bg-indigo-100 border-indigo-500 text-indigo-800" (コンディションに合わせて色を選択: 休息ならindigo, 運動ならred/orange/blue, 調整ならgreen)
-                    }
+                    クライアントの今日のコンディションと過去の履歴に基づいて、今日1日の最適なスケジュールをJSONで作成してください。
+                    目標: 65kg / 15% (現在: ${status.weight}kg / ${status.bfp}%)
+                    曜日: ${dayOfWeek}, 睡眠: ${sleep}時間
+                    履歴: ${recentHistory}
+                    指示: 睡眠6h未満はリカバリー優先。体重増減に応じたアドバイス。
+                    JSONフォーマット:
+                    { "day": "${dayOfWeek}曜日", "title": "テーマ", "type": "rest/home/gym/cardio/adjustment", "targetCalories": 1800, "workout": "メイン指示", "workoutDetail": "詳細", "sleepAdvice": "睡眠", "dietDetail": { "breakfast": "", "lunch": "", "dinner": "", "focus": "" }, "color": "bg-indigo-100 border-indigo-500 text-indigo-800" }
                 `;
 
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${profile.apiKey}`;
 
                 try {
                     const response = await fetch(url, {
@@ -407,16 +316,15 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
                     });
-                    
                     const data = await response.json();
                     if (data.candidates && data.candidates[0].content) {
                         const text = data.candidates[0].content.parts[0].text.replace(/```json|```/g, '').trim();
                         const generated = JSON.parse(text);
-                        setAiGeneratedPlan(generated);
+                        setAiPlan(generated);
+                        saveDailyData(dailyData, mealLogs, generated);
                     }
                 } catch (error) {
                     console.error('Plan generation failed:', error);
-                    // エラー時はベースプランが使われるので何もしない（あるいはアラート）
                 } finally {
                     setIsPlanLoading(false);
                 }
@@ -424,845 +332,386 @@
 
             const handleCheckInSubmit = async (e) => {
                 e.preventDefault();
+                const newEntry = {
+                    date: new Date().toISOString(),
+                    weight: profile.weight,
+                    bfp: profile.bfp
+                };
+                
+                // 履歴更新
                 const todayStr = new Date().toDateString();
                 const newHistory = [...history];
                 const existingIndex = newHistory.findIndex(h => new Date(h.date).toDateString() === todayStr);
                 
-                const newEntry = {
-                    date: new Date().toISOString(),
-                    weight: currentStatus.weight,
-                    bfp: currentStatus.bfp
-                };
-
                 if (existingIndex >= 0) {
                     newHistory[existingIndex] = newEntry;
                 } else {
                     newHistory.push(newEntry);
                 }
-                
                 setHistory(newHistory);
-                setDailyCheckIn(prev => ({ 
-                    ...prev, 
+                saveHistory(newHistory); // クラウド保存
+                
+                // プロファイル保存
+                saveProfile(profile);
+
+                // 今日のデータ更新
+                const newCheckIn = { 
+                    ...dailyData, 
                     isCheckedIn: true, 
                     date: new Date().toISOString(),
                     isFinished: false,
                     dailyFeedback: null,
                     dailyImage: null
-                }));
+                };
+                setDailyData(newCheckIn);
+                saveDailyData(newCheckIn, mealLogs, aiPlan);
 
-                // APIキーがあれば、ここでその日のプランを動的生成
-                if (apiKey) {
-                    await generateDailyPlan(currentStatus, dailyCheckIn.sleepHours);
+                if (profile.apiKey) {
+                    await generateDailyPlan(profile, dailyData.sleepHours);
                 }
             };
 
             const toggleTask = (taskName) => {
-                if (dailyCheckIn.isFinished) return;
-                setDailyCheckIn(prev => ({
-                ...prev,
-                tasks: { ...prev.tasks, [taskName]: !prev.tasks[taskName] }
-                }));
+                if (dailyData.isFinished) return;
+                const newTasks = { ...dailyData.tasks, [taskName]: !dailyData.tasks[taskName] };
+                const newCheckIn = { ...dailyData, tasks: newTasks };
+                setDailyData(newCheckIn);
+                saveDailyData(newCheckIn, mealLogs, aiPlan);
             };
 
             const handleSkipMeal = (mealType) => {
-                if (dailyCheckIn.isFinished) return;
-                if (window.confirm(`${mealType === 'breakfast' ? '朝食' : mealType === 'lunch' ? '昼食' : '夕食'}を「欠食（食事なし）」として記録しますか？`)) {
-                setMealLogs(prev => ({
-                    ...prev,
-                    [mealType]: { image: null, result: null, skipped: true }
-                }));
+                if (dailyData.isFinished) return;
+                if (window.confirm('欠食として記録しますか？')) {
+                    const newMealLogs = { ...mealLogs, [mealType]: { image: null, result: null, skipped: true } };
+                    setMealLogs(newMealLogs);
+                    saveDailyData(dailyData, newMealLogs, aiPlan);
                 }
             };
 
             const handleResetMeal = (mealType) => {
-                if (dailyCheckIn.isFinished) return;
-                setMealLogs(prev => ({
-                    ...prev,
-                    [mealType]: { image: null, result: null, skipped: false }
-                }));
+                if (dailyData.isFinished) return;
+                const newMealLogs = { ...mealLogs, [mealType]: { image: null, result: null, skipped: false } };
+                setMealLogs(newMealLogs);
+                saveDailyData(dailyData, newMealLogs, aiPlan);
             };
 
             const handleImageUpload = (event) => {
-                if (dailyCheckIn.isFinished) return;
+                if (dailyData.isFinished) return;
                 const file = event.target.files[0];
                 if (file) {
-                const reader = new FileReader();
-                reader.onloadend = () => {
-                    analyzeImage(reader.result, activeMeal);
-                };
-                reader.readAsDataURL(file);
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        // 表示用にローカルStateにはセットするが、DB保存時にはimage: nullにする
+                        setMealLogs(prev => ({
+                            ...prev,
+                            [activeMeal]: { ...prev[activeMeal], image: reader.result }
+                        }));
+                        analyzeImage(reader.result, activeMeal);
+                    };
+                    reader.readAsDataURL(file);
                 }
                 event.target.value = '';
             };
 
             const analyzeImage = async (base64Image, mealType) => {
-                if (!apiKey) {
-                    alert("APIキーが設定されていません。右上の設定アイコンからAPIキーを入力してください。");
+                if (!profile.apiKey) {
+                    alert("APIキーが設定されていません。");
                     openSettings();
                     return;
                 }
                 setAnalyzing(true);
-                
                 const base64Data = base64Image.split(',')[1];
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${profile.apiKey}`;
                 const payload = {
-                contents: [{
-                    parts: [
-                    { text: "この料理画像を分析してください。料理名、推定カロリー(kcal)、PFCバランス(g)（タンパク質:protein, 脂質:fat, 炭水化物:carbs）、そして簡単なダイエットアドバイスをJSON形式で出力してください。JSONのキーは name, calories, protein, fat, carbs, advice としてください。" },
-                    {
-                        inlineData: {
-                        mimeType: "image/jpeg",
-                        data: base64Data
-                        }
-                    }
-                    ]
-                }],
-                generationConfig: {
-                    responseMimeType: "application/json"
-                }
+                    contents: [{ parts: [
+                        { text: "料理画像を分析し、料理名、推定カロリー(kcal)、PFC(g)、アドバイスをJSON(name, calories, protein, fat, carbs, advice)で出力。" },
+                        { inlineData: { mimeType: "image/jpeg", data: base64Data } }
+                    ] }],
+                    generationConfig: { responseMimeType: "application/json" }
                 };
 
                 try {
-                const response = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                
-                const data = await response.json();
-                if (data.candidates && data.candidates[0].content) {
-                    const text = data.candidates[0].content.parts[0].text;
-                    const result = JSON.parse(text);
-                    
-                    setMealLogs(prev => ({
-                    ...prev,
-                    [mealType]: {
-                        image: base64Image,
-                        result: result,
-                        skipped: false
+                    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    const data = await response.json();
+                    if (data.candidates) {
+                        const result = JSON.parse(data.candidates[0].content.parts[0].text);
+                        const newMealLogs = {
+                            ...mealLogs,
+                            [mealType]: { image: base64Image, result: result, skipped: false }
+                        };
+                        setMealLogs(newMealLogs);
+                        saveDailyData(dailyData, newMealLogs, aiPlan); // 結果は保存（画像は除外される）
                     }
-                    }));
-                }
                 } catch (error) {
-                console.error('Error analyzing image:', error);
-                alert('解析に失敗しました。APIキーが正しいか確認してください。');
+                    alert('解析失敗: APIキーなどを確認してください');
                 } finally {
-                setAnalyzing(false);
+                    setAnalyzing(false);
                 }
             };
 
-            const totalCalories = useMemo(() => {
-                return Object.values(mealLogs).reduce((sum, meal) => sum + (meal.result?.calories || 0), 0);
-            }, [mealLogs]);
-
-            const caloriesProgress = useMemo(() => {
-                return Math.min(100, (totalCalories / plan.targetCalories) * 100);
-            }, [totalCalories, plan]);
+            const totalCalories = useMemo(() => Object.values(mealLogs).reduce((sum, meal) => sum + (meal.result?.calories || 0), 0), [mealLogs]);
+            const caloriesProgress = useMemo(() => Math.min(100, (totalCalories / plan.targetCalories) * 100), [totalCalories, plan]);
 
             const handleFinishDay = async () => {
-                if (!window.confirm("1日の記録を確定して終了しますか？\n（確定後は修正できません）")) {
-                return;
-                }
-
-                if (!apiKey) {
-                    alert("APIキーが設定されていないため、AIコメントは生成されませんが、記録は完了します。");
-                    setDailyCheckIn(prev => ({
-                        ...prev,
-                        isFinished: true,
-                        dailyFeedback: "APIキー未設定のため、AIコメントはスキップされました。記録は保存されました！明日も頑張りましょう。",
-                        dailyImage: null
-                    }));
+                if (!window.confirm("1日の記録を確定しますか？")) return;
+                if (!profile.apiKey) {
+                    alert("APIキーがないため記録のみ保存します。");
+                    const newCheckIn = { ...dailyData, isFinished: true, dailyFeedback: "記録完了。APIキーを設定するとAIコメントがもらえます。" };
+                    setDailyData(newCheckIn);
+                    saveDailyData(newCheckIn, mealLogs, aiPlan);
                     return;
                 }
 
                 setFinishing(true);
-                
-                // 1. テキストコメント生成
-                const textPrompt = `
-                あなたはプロのダイエットインストラクターです。
-                クライアントの今日の成果報告に基づいて、100文字以内で一言フィードバック（励まし、称賛、または愛のある注意）をください。
-                
-                【ユーザー目標】
-                65kg / 15% (現在: ${currentStatus.weight}kg)
-                
-                【今日の結果】
-                ・日付: ${plan.day} (${plan.title})
-                ・タスク達成状況:
-                    - 食事ルール: ${dailyCheckIn.tasks.meal ? '達成' : '未達成'}
-                    - 運動ノルマ: ${dailyCheckIn.tasks.workout ? '達成' : '未達成'}
-                    - 睡眠準備: ${dailyCheckIn.tasks.sleep ? '達成' : '未達成'}
-                ・摂取カロリー: ${totalCalories} / ${plan.targetCalories} kcal
-                
-                口調は「元陸上部コーチのような、厳しくも頼れるパートナー」でお願いします。
-                `;
+                const textPrompt = `ダイエットコーチとして、今日の成果に100文字以内のフィードバックを。目標65kg, 現在${profile.weight}kg, 摂取${totalCalories}/${plan.targetCalories}kcal, タスク達成:食${dailyData.tasks.meal?1:0}/運${dailyData.tasks.workout?1:0}/睡${dailyData.tasks.sleep?1:0}`;
+                const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${profile.apiKey}`;
+                const imageUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${profile.apiKey}`;
 
-                const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-                
-                // User requested "Nano Banana Pro" -> Mapping to Google's actual latest model (Imagen 4)
-                const imageUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${apiKey}`;
-
-                let generatedFeedback = "お疲れ様でした！";
+                let generatedFeedback = "お疲れ様！";
                 let generatedImage = null;
-                let errorMessage = "";
 
                 try {
-                    // テキスト生成
-                    const textResponse = await fetch(textUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{ parts: [{ text: textPrompt }] }]
-                        })
-                    });
-                    const textData = await textResponse.json();
-                    if (textData.error) throw new Error(`Text Gen Error: ${textData.error.message}`);
-                    generatedFeedback = textData.candidates?.[0]?.content?.parts?.[0]?.text || "お疲れ様！";
+                    // Text
+                    const textRes = await fetch(textUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: textPrompt }] }] }) });
+                    const textData = await textRes.json();
+                    if(textData.candidates) generatedFeedback = textData.candidates[0].content.parts[0].text;
 
-                    // 2. 画像生成 (Imagen 4)
-                    // 今日の達成度や曜日に応じてプロンプトを少し変える
-                    const feelingPrompt = dailyCheckIn.tasks.workout ? "energetic, powerful, sweat" : "relaxing, peaceful, recovery";
-                    const imagePrompt = `An anime style illustration of a fitness motivation poster. Theme: ${feelingPrompt}, A fit person smiling and giving a thumbs up, bright warm lighting, high quality digital art, encouraging atmosphere.`;
+                    // Image
+                    const feelingPrompt = dailyData.tasks.workout ? "energetic, powerful" : "relaxing, peaceful";
+                    const imagePrompt = `Anime style fitness motivation poster, Theme: ${feelingPrompt}, A fit person giving a thumbs up, bright lighting.`;
+                    const imgRes = await fetch(imageUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instances: [{ prompt: imagePrompt }], parameters: { sampleCount: 1 } }) });
+                    const imgData = await imgRes.json();
+                    if(imgData.predictions?.[0]?.bytesBase64Encoded) generatedImage = `data:image/png;base64,${imgData.predictions[0].bytesBase64Encoded}`;
 
-                    const imageResponse = await fetch(imageUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            instances: [{ prompt: imagePrompt }],
-                            parameters: { sampleCount: 1 }
-                        })
-                    });
-                    const imageData = await imageResponse.json();
-                    
-                    if (imageData.error) {
-                        console.error("Image Gen API Error:", imageData.error);
-                        errorMessage = `画像生成エラー: ${imageData.error.message}`;
-                    } else if (imageData.predictions?.[0]?.bytesBase64Encoded) {
-                        generatedImage = `data:image/png;base64,${imageData.predictions[0].bytesBase64Encoded}`;
-                    } else {
-                        errorMessage = "画像が生成されませんでした (予期せぬレスポンス)";
-                    }
+                } catch (e) { console.error(e); generatedFeedback += " (通信エラーあり)"; }
 
-                } catch (error) {
-                    console.error("Generation failed", error);
-                    errorMessage = error.message || "通信エラーが発生しました";
-                    if (!generatedFeedback) generatedFeedback = "通信エラーが発生しましたが、記録は保存されました。";
-                } finally {
-                    // エラーがあった場合、フィードバックに追記
-                    if (errorMessage) {
-                        generatedFeedback += `\n\n(※システム通知: ${errorMessage})`;
-                    }
-
-                    setDailyCheckIn(prev => ({
-                        ...prev,
-                        isFinished: true,
-                        dailyFeedback: generatedFeedback,
-                        dailyImage: generatedImage
-                    }));
-                    
-                    setFinishing(false);
-                    setTimeout(() => {
-                        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-                    }, 100);
-                }
+                const newCheckIn = { ...dailyData, isFinished: true, dailyFeedback: generatedFeedback, dailyImage: generatedImage };
+                setDailyData(newCheckIn);
+                saveDailyData(newCheckIn, mealLogs, aiPlan); // 画像は保存されない点に注意
+                setFinishing(false);
+                setTimeout(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }), 100);
             };
 
-            // 全データリセットではなく、今日のデータのみリセットする関数
             const handleDailyReset = () => {
-                if(window.confirm('今日のデータをリセットして、朝（未チェックイン）の状態に戻しますか？\n※過去の体重履歴やAPIキーは消えません。')) {
-                    localStorage.removeItem('diet_daily_checkin');
-                    localStorage.removeItem('diet_meal_logs');
-                    localStorage.removeItem('diet_ai_plan');
-                    window.location.reload();
+                if(window.confirm('今日の記録をリセットしますか？')) {
+                    const newCheckIn = { 
+                        date: new Date().toISOString(),
+                        sleepHours: 6,
+                        feeling: 'normal',
+                        isCheckedIn: false,
+                        tasks: { meal: false, workout: false, sleep: false },
+                        isFinished: false,
+                        dailyFeedback: null,
+                        dailyImage: null
+                    };
+                    const newMealLogs = {
+                        breakfast: { image: null, result: null, skipped: false },
+                        lunch: { image: null, result: null, skipped: false },
+                        dinner: { image: null, result: null, skipped: false }
+                    };
+                    setDailyData(newCheckIn);
+                    setMealLogs(newMealLogs);
+                    setAiPlan(null);
+                    saveDailyData(newCheckIn, newMealLogs, null);
                 }
             };
 
-            const isSleepDeprived = dailyCheckIn.sleepHours < 6.5;
+            if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-500"><Loader2 className="w-10 h-10 animate-spin" /></div>;
 
             return (
                 <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-24">
-                
-                {/* 設定モーダル */}
-                {showSettings && (
-                    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-                        <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm animate-in zoom-in-95 duration-200">
-                            <div className="flex justify-between items-center mb-4">
-                                <h3 className="text-lg font-bold flex items-center gap-2">
-                                    <Settings className="w-5 h-5 text-slate-500" />
-                                    設定
-                                </h3>
-                                <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-600">
-                                    <X className="w-5 h-5" />
-                                </button>
+                    {/* Header */}
+                    <header className="bg-slate-900 text-white p-6 rounded-b-3xl shadow-lg relative overflow-hidden">
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500 rounded-full blur-3xl opacity-20 -mr-10 -mt-10"></div>
+                        <div className="flex justify-between items-center mb-6 relative z-10">
+                            <div>
+                                <h1 className="text-xl font-bold flex items-center gap-2">
+                                    <Activity className="w-5 h-5 text-emerald-400" /> Diet Partner
+                                    {syncError && <CloudOff className="w-4 h-4 text-red-400" />}
+                                    {!syncError && <Cloud className="w-4 h-4 text-emerald-400" />}
+                                </h1>
+                                <p className="text-slate-400 text-xs mt-1">Goal: 65kg / 15%</p>
                             </div>
-                            <div className="space-y-4">
-                                <div>
-                                    <label className="block text-sm font-bold text-slate-600 mb-1">
-                                        Google Gemini APIキー
-                                    </label>
-                                    <div className="relative">
-                                        <Key className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-                                        <input 
-                                            type="password" 
-                                            value={tempApiKey}
-                                            onChange={(e) => setTempApiKey(e.target.value)}
-                                            placeholder="AIzaSy..."
-                                            className="w-full pl-10 pr-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-emerald-500 outline-none text-sm font-mono"
-                                        />
+                            <div className="flex items-center gap-3">
+                                <div className="text-right"><p className="text-xs text-slate-400">{today.toLocaleDateString()}</p><p className="font-bold text-lg">{plan.day}</p></div>
+                                <button onClick={openSettings} className="bg-white/10 hover:bg-white/20 p-2 rounded-full"><Settings className="w-5 h-5 text-slate-200" /></button>
+                            </div>
+                        </div>
+                        {dailyData.isCheckedIn && (
+                            <div className="space-y-4 relative z-10">
+                                <div className="flex justify-between items-center">
+                                    <div className="bg-slate-800/50 p-3 rounded-lg w-[48%] backdrop-blur-sm">
+                                        <p className="text-xs text-slate-400">体重</p>
+                                        <div className="flex items-baseline gap-1"><span className="text-2xl font-bold">{profile.weight}</span><span className="text-xs">kg</span></div>
+                                        <p className="text-xs text-emerald-400 flex items-center gap-1"><TrendingDown className="w-3 h-3" />あと {(profile.weight - INITIAL_GOAL.weight).toFixed(1)}kg</p>
                                     </div>
-                                    <p className="text-xs text-slate-400 mt-1">
-                                        ※食事分析やコメント生成に必要です。<br/>
-                                        ※キーはブラウザ内にのみ保存されます。
-                                    </p>
+                                    <div className="bg-slate-800/50 p-3 rounded-lg w-[48%] backdrop-blur-sm">
+                                        <p className="text-xs text-slate-400">体脂肪率</p>
+                                        <div className="flex items-baseline gap-1"><span className="text-2xl font-bold">{profile.bfp}</span><span className="text-xs">%</span></div>
+                                        <p className="text-xs text-emerald-400 flex items-center gap-1"><TrendingDown className="w-3 h-3" />あと {(profile.bfp - INITIAL_GOAL.bfp).toFixed(1)}%</p>
+                                    </div>
                                 </div>
-                                <button 
-                                    onClick={handleSaveApiKey}
-                                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 rounded-lg transition-colors"
-                                >
-                                    保存する
-                                </button>
-                                
-                                <div className="pt-4 mt-4 border-t border-slate-100">
-                                    <h4 className="text-xs font-bold text-slate-500 mb-2">危険な操作</h4>
-                                    <button 
-                                        onClick={() => {
-                                            if(window.confirm('本当にすべてのデータを削除しますか？\nAPIキー、過去の履歴など全てが失われます。')) {
-                                                localStorage.clear();
-                                                window.location.reload();
-                                            }
-                                        }}
-                                        className="w-full flex items-center justify-center gap-2 text-red-500 text-xs font-bold py-2 rounded-lg hover:bg-red-50 transition-colors"
-                                    >
-                                        <Trash2 className="w-3 h-3" /> 全データを完全に削除する
-                                    </button>
+                                <div className="bg-white/5 p-3 rounded-xl border border-white/10">
+                                    <SimpleChart data={history.slice(-14)} dataKey="weight" color="#34d399" label="Weight" unit="kg" domain={[INITIAL_GOAL.weight, INITIAL_GOAL.startWeight]} />
                                 </div>
                             </div>
-                        </div>
-                    </div>
-                )}
-
-                {/* ヘッダーエリア */}
-                <header className="bg-slate-900 text-white p-6 rounded-b-3xl shadow-lg relative overflow-hidden">
-                    <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500 rounded-full blur-3xl opacity-20 -mr-10 -mt-10"></div>
-                    
-                    <div className="flex justify-between items-center mb-6 relative z-10">
-                    <div>
-                        <h1 className="text-xl font-bold flex items-center gap-2">
-                        <Activity className="w-5 h-5 text-emerald-400" />
-                        Diet Partner
-                        </h1>
-                        <p className="text-slate-400 text-xs mt-1">Goal: 65kg / 15%</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                        <div className="text-right">
-                            <p className="text-xs text-slate-400">{today.toLocaleDateString()}</p>
-                            <p className="font-bold text-lg">{plan.day}</p>
-                        </div>
-                        <button 
-                            onClick={openSettings}
-                            className="bg-white/10 hover:bg-white/20 p-2 rounded-full transition-colors"
-                        >
-                            <Settings className="w-5 h-5 text-slate-200" />
-                        </button>
-                    </div>
-                    </div>
-
-                    {/* 進捗＆グラフエリア */}
-                    {dailyCheckIn.isCheckedIn && (
-                    <div className="space-y-4 relative z-10">
-                        <div className="flex justify-between items-center">
-                            <div className="bg-slate-800/50 p-3 rounded-lg w-[48%] backdrop-blur-sm">
-                            <p className="text-xs text-slate-400">体重</p>
-                            <div className="flex items-baseline gap-1">
-                                <span className="text-2xl font-bold">{currentStatus.weight}</span>
-                                <span className="text-xs">kg</span>
-                            </div>
-                            <p className="text-xs text-emerald-400 flex items-center gap-1">
-                                <TrendingDown className="w-3 h-3" />
-                                あと {(currentStatus.weight - INITIAL_GOAL.weight).toFixed(1)}kg
-                            </p>
-                            </div>
-                            <div className="bg-slate-800/50 p-3 rounded-lg w-[48%] backdrop-blur-sm">
-                            <p className="text-xs text-slate-400">体脂肪率</p>
-                            <div className="flex items-baseline gap-1">
-                                <span className="text-2xl font-bold">{currentStatus.bfp}</span>
-                                <span className="text-xs">%</span>
-                            </div>
-                            <p className="text-xs text-emerald-400 flex items-center gap-1">
-                                <TrendingDown className="w-3 h-3" />
-                                あと {(currentStatus.bfp - INITIAL_GOAL.bfp).toFixed(1)}%
-                            </p>
-                            </div>
-                        </div>
-                        
-                        <div className="bg-white/5 p-3 rounded-xl border border-white/10">
-                        <SimpleChart 
-                            data={history.slice(-14)} 
-                            dataKey="weight" 
-                            color="#34d399" 
-                            label="Weight" 
-                            unit="kg"
-                            domain={[INITIAL_GOAL.weight, INITIAL_GOAL.startWeight]}
-                        />
-                        </div>
-                    </div>
-                    )}
-                </header>
-
-                <main className="max-w-md mx-auto px-4 -mt-4 relative z-20">
-                    
-                    {/* モーニング・チェックイン（未実施の場合） */}
-                    {!dailyCheckIn.isCheckedIn ? (
-                    <div className="bg-white rounded-xl shadow-xl p-6 mb-6 border border-slate-100">
-                        <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700">
-                        <Scale className="w-5 h-5 text-blue-500" />
-                        モーニング・チェックイン
-                        </h2>
-                        <form onSubmit={handleCheckInSubmit} className="space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                            <label className="block text-xs font-bold text-slate-500 mb-1">体重 (kg)</label>
-                            <input 
-                                type="number" 
-                                step="0.1" 
-                                name="weight"
-                                value={currentStatus.weight}
-                                onChange={handleStatusChange}
-                                className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none"
-                                required
-                            />
-                            </div>
-                            <div>
-                            <label className="block text-xs font-bold text-slate-500 mb-1">体脂肪率 (%)</label>
-                            <input 
-                                type="number" 
-                                step="0.1" 
-                                name="bfp"
-                                value={currentStatus.bfp}
-                                onChange={handleStatusChange}
-                                className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none"
-                                required
-                            />
-                            </div>
-                        </div>
-                        <div>
-                            <label className="block text-xs font-bold text-slate-500 mb-1">昨晩の睡眠 (時間)</label>
-                            <input 
-                            type="number" 
-                            step="0.5" 
-                            value={dailyCheckIn.sleepHours}
-                            onChange={(e) => setDailyCheckIn({...dailyCheckIn, sleepHours: parseFloat(e.target.value)})}
-                            className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none"
-                            required
-                            />
-                        </div>
-                        
-                        <button 
-                            type="submit"
-                            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow-md transition-all active:scale-95 flex items-center justify-center gap-2"
-                        >
-                            記録してスタート <ChevronRight className="w-5 h-5" />
-                        </button>
-                        </form>
-                    </div>
-                    ) : (
-                    /* チェックイン完了後のダッシュボード */
-                    <div className="space-y-6 pt-4">
-                        
-                        {/* 睡眠警告 */}
-                        {isSleepDeprived && (
-                        <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-lg shadow-sm flex items-start gap-3">
-                            <AlertCircle className="w-6 h-6 text-amber-500 flex-shrink-0 mt-1" />
-                            <div>
-                            <h3 className="font-bold text-amber-800 text-sm">睡眠不足アラート</h3>
-                            <p className="text-xs text-amber-700 mt-1 leading-relaxed">
-                                睡眠時間が{dailyCheckIn.sleepHours}時間です。食欲ホルモンが増えやすいため、<br/>
-                                1. カフェインは14時まで<br/>
-                                2. 仮眠を15分とる<br/>
-                                を意識してください。
-                            </p>
-                            </div>
-                        </div>
                         )}
+                    </header>
 
-                        {/* 今日のプランカード（ミッション指示） */}
-                        <section className={`rounded-xl shadow-lg border-2 overflow-hidden ${plan.color.replace('text-', 'border-').replace('bg-', 'bg-white ')}`}>
-                        <div className={`p-4 ${plan.color} flex justify-between items-center`}>
-                            <h2 className="font-bold text-lg flex items-center gap-2">
-                            <Calendar className="w-5 h-5" />
-                            {isPlanLoading ? "プラン生成中..." : "今日のミッション"}
-                            </h2>
-                            <span className="text-xs font-bold px-2 py-1 bg-white/60 rounded text-slate-800 uppercase tracking-wider">
-                            {plan.type}
-                            </span>
-                        </div>
-                        <div className="p-5 bg-white relative">
-                            {isPlanLoading && (
-                                <div className="absolute inset-0 bg-white/90 z-10 flex flex-col items-center justify-center text-slate-500">
-                                    <Loader2 className="w-10 h-10 animate-spin text-blue-500 mb-2" />
-                                    <p className="text-sm font-bold animate-pulse">あなたの状態を分析中...</p>
-                                    <p className="text-xs mt-1">睡眠・体重・曜日から最適プランを作成しています</p>
-                                </div>
-                            )}
-
-                            <h3 className="text-2xl font-bold text-slate-800 mb-3 flex items-center gap-2">
-                                {plan.title}
-                                {aiGeneratedPlan && <Sparkles className="w-5 h-5 text-yellow-500" />}
-                            </h3>
-                            
-                            <div className="space-y-4">
-                            {/* 運動 */}
-                            <div className="bg-slate-50 p-4 rounded-lg border border-slate-100">
-                                <div className="flex items-center gap-2 mb-2">
-                                <Activity className="w-4 h-4 text-blue-500" />
-                                <p className="text-sm font-bold text-slate-700">運動指示</p>
-                                </div>
-                                <p className="text-slate-700 font-bold mb-1">{plan.workout}</p>
-                                <p className="text-xs text-slate-500 whitespace-pre-line leading-relaxed border-t border-slate-200 pt-2 mt-2">
-                                {plan.workoutDetail}
-                                </p>
-                            </div>
-
-                            {/* 食事ガイド（目標カロリー追加） */}
-                            <div className="bg-slate-50 p-4 rounded-lg border border-slate-100">
-                                <div className="flex items-center justify-between mb-2">
-                                <div className="flex items-center gap-2">
-                                    <Utensils className="w-4 h-4 text-emerald-500" />
-                                    <p className="text-sm font-bold text-slate-700">食事ガイド</p>
-                                </div>
-                                <div className="flex items-center gap-1 text-xs font-bold bg-white px-2 py-1 rounded border border-slate-200 text-emerald-600">
-                                    <Flame className="w-3 h-3 fill-emerald-600" />
-                                    目標: {plan.targetCalories} kcal
-                                </div>
-                                </div>
-                                <ul className="text-xs text-slate-600 space-y-2 mb-3">
-                                <li className="flex gap-2"><span className="font-bold text-emerald-600 min-w-[2.5em]">朝:</span> {plan.dietDetail.breakfast}</li>
-                                <li className="flex gap-2"><span className="font-bold text-emerald-600 min-w-[2.5em]">昼:</span> {plan.dietDetail.lunch}</li>
-                                <li className="flex gap-2"><span className="font-bold text-emerald-600 min-w-[2.5em]">夜:</span> {plan.dietDetail.dinner}</li>
-                                </ul>
-                                <div className="bg-emerald-50 p-2 rounded text-xs text-emerald-800 font-bold border border-emerald-100">
-                                POINT: {plan.dietDetail.focus}
-                                </div>
-                            </div>
-
-                            {/* 睡眠 */}
-                            <div className="bg-slate-50 p-4 rounded-lg border border-slate-100">
-                                <div className="flex items-center gap-2 mb-2">
-                                <Moon className="w-4 h-4 text-indigo-500" />
-                                <p className="text-sm font-bold text-slate-700">睡眠・リカバリー</p>
-                                </div>
-                                <p className="text-xs text-slate-600 leading-relaxed">
-                                {plan.sleepAdvice}
-                                </p>
-                            </div>
-                            </div>
-                        </div>
-                        </section>
-
-                        {/* 結果報告（AI食事分析機能） */}
-                        <section className={`bg-gradient-to-r from-emerald-500 to-teal-600 rounded-xl shadow-lg p-5 text-white transition-opacity ${dailyCheckIn.isFinished ? 'opacity-75 pointer-events-none grayscale-[0.5]' : ''}`}>
-                        <div className="flex justify-between items-center mb-4">
-                            <div>
-                            <h3 className="font-bold flex items-center gap-2">
-                                <Camera className="w-5 h-5" />
-                                食事の実績を記録
-                            </h3>
-                            <div className="flex items-baseline gap-2 mt-1">
-                                <p className="text-xs text-emerald-100 opacity-90">
-                                Total: <span className="text-lg font-bold">{totalCalories}</span> / {plan.targetCalories} kcal
-                                </p>
-                                {totalCalories > 0 && (
-                                <span className={`text-xs font-bold px-1.5 rounded ${totalCalories > plan.targetCalories ? 'bg-red-500 text-white' : 'bg-emerald-700 text-emerald-100'}`}>
-                                    {caloriesProgress.toFixed(0)}%
-                                </span>
-                                )}
-                            </div>
-                            {/* カロリーバー */}
-                            <div className="w-full bg-black/20 h-1.5 rounded-full mt-1 max-w-[200px]">
-                                <div 
-                                className={`h-full rounded-full transition-all duration-500 ${totalCalories > plan.targetCalories ? 'bg-red-400' : 'bg-white'}`}
-                                style={{ width: `${Math.min(100, (totalCalories / plan.targetCalories) * 100)}%` }}
-                                ></div>
-                            </div>
-                            </div>
-                            <span className="text-xs bg-white/20 px-2 py-1 rounded text-white font-bold">AI判定</span>
-                        </div>
-
-                        {/* 食事タブ切り替え */}
-                        <div className="flex p-1 bg-black/20 rounded-lg mb-4">
-                            {[
-                            { id: 'breakfast', label: '朝食', icon: Coffee },
-                            { id: 'lunch', label: '昼食', icon: Sun },
-                            { id: 'dinner', label: '夕食', icon: Sunset }
-                            ].map((meal) => (
-                            <button
-                                key={meal.id}
-                                onClick={() => setActiveMeal(meal.id)}
-                                className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-md text-sm font-bold transition-all ${
-                                activeMeal === meal.id ? 'bg-white text-teal-700 shadow-sm' : 'text-white/60 hover:bg-white/10'
-                                }`}
-                            >
-                                <meal.icon className="w-3 h-3" />
-                                {meal.label}
-                                {mealLogs[meal.id].result && <span className="ml-1 w-2 h-2 rounded-full bg-emerald-400"></span>}
-                                {mealLogs[meal.id].skipped && <span className="ml-1 w-2 h-2 rounded-full bg-slate-400"></span>}
-                            </button>
-                            ))}
-                        </div>
-
-                        <div className="animate-in fade-in slide-in-from-right-2 duration-300" key={activeMeal}>
-                            {/* スキップ状態の表示 */}
-                            {mealLogs[activeMeal].skipped ? (
-                            <div className="bg-black/20 rounded-lg p-6 flex flex-col items-center justify-center text-center">
-                                <Ban className="w-10 h-10 text-white/50 mb-2" />
-                                <p className="font-bold text-white mb-1">食事なし (Skipped)</p>
-                                <p className="text-xs text-white/70 mb-4">この食事は摂取しなかったとして0kcalで記録されています。</p>
-                                <button 
-                                    onClick={() => handleResetMeal(activeMeal)}
-                                    className="bg-white/20 hover:bg-white/30 text-white text-xs font-bold px-4 py-2 rounded-full flex items-center gap-1 transition-colors"
-                                >
-                                    <Undo2 className="w-3 h-3" /> 記録をやり直す
-                                </button>
-                            </div>
-                            ) : !mealLogs[activeMeal].image ? (
-                            /* 未記録状態の表示 */
-                            <div className="space-y-3">
-                                <button 
-                                onClick={() => fileInputRef.current.click()}
-                                className="w-full bg-white/10 hover:bg-white/20 border-2 border-dashed border-white/30 rounded-lg p-6 flex flex-col items-center justify-center transition-all active:scale-95"
-                                >
-                                <Camera className="w-8 h-8 mb-2 text-white/80" />
-                                <span className="text-sm font-bold">{
-                                    activeMeal === 'breakfast' ? '朝食' : activeMeal === 'lunch' ? '昼食' : '夕食'
-                                }の写真を撮る</span>
-                                <span className="text-xs text-white/60 mt-1">AIがカロリー・PFCを判定</span>
-                                <input 
-                                    type="file" 
-                                    ref={fileInputRef} 
-                                    accept="image/*" 
-                                    className="hidden" 
-                                    onChange={handleImageUpload}
-                                />
-                                </button>
-                                
-                                <button 
-                                onClick={() => handleSkipMeal(activeMeal)}
-                                className="w-full text-white/60 hover:text-white text-xs py-2 flex items-center justify-center gap-1 transition-colors"
-                                >
-                                <Ban className="w-3 h-3" /> 今回は食事をとらなかった (Skip)
-                                </button>
-                            </div>
-                            ) : (
-                            /* 記録済み（画像あり）の表示 */
-                            <div className="space-y-4">
-                                <div className="relative rounded-lg overflow-hidden h-40 bg-black/20 flex items-center justify-center">
-                                <img src={mealLogs[activeMeal].image} alt="Food" className="h-full w-full object-cover opacity-90" />
-                                {analyzing && (
-                                    <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center backdrop-blur-sm z-10">
-                                    <Loader2 className="w-8 h-8 animate-spin text-white mb-2" />
-                                    <span className="text-sm font-bold">AIが分析中...</span>
+                    <main className="max-w-md mx-auto px-4 -mt-4 relative z-20">
+                        {!dailyData.isCheckedIn ? (
+                            <div className="bg-white rounded-xl shadow-xl p-6 mb-6 border border-slate-100">
+                                <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700"><Scale className="w-5 h-5 text-blue-500" /> モーニング・チェックイン</h2>
+                                <form onSubmit={handleCheckInSubmit} className="space-y-4">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div><label className="block text-xs font-bold text-slate-500 mb-1">体重 (kg)</label><input type="number" step="0.1" name="weight" value={profile.weight} onChange={handleStatusChange} className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none" required /></div>
+                                        <div><label className="block text-xs font-bold text-slate-500 mb-1">体脂肪率 (%)</label><input type="number" step="0.1" name="bfp" value={profile.bfp} onChange={handleStatusChange} className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none" required /></div>
                                     </div>
-                                )}
-                                {!analyzing && (
-                                    <button 
-                                    onClick={() => {
-                                        if(window.confirm('この食事記録を削除して撮り直しますか？')) {
-                                        setMealLogs(prev => ({ ...prev, [activeMeal]: { image: null, result: null, skipped: false } }));
-                                        }
-                                    }}
-                                    className="absolute top-2 right-2 bg-black/50 p-1.5 rounded-full text-white hover:bg-black/70"
-                                    >
-                                    <RefreshCw className="w-4 h-4" />
-                                    </button>
-                                )}
-                                </div>
-                                
-                                {mealLogs[activeMeal].result && (
-                                <div className="bg-white text-slate-800 rounded-lg p-4 shadow-sm">
-                                    <h4 className="font-bold text-lg mb-1 border-b border-slate-100 pb-2 flex justify-between items-center">
-                                    {mealLogs[activeMeal].result.name}
-                                    <span className="text-emerald-600 font-extrabold">{mealLogs[activeMeal].result.calories} kcal</span>
-                                    </h4>
-                                    
-                                    <div className="grid grid-cols-3 gap-2 my-3 text-center">
-                                    <div className="bg-red-50 p-2 rounded">
-                                        <p className="text-[10px] text-red-500 font-bold uppercase">Protein</p>
-                                        <p className="font-bold text-red-700">{mealLogs[activeMeal].result.protein}g</p>
-                                    </div>
-                                    <div className="bg-yellow-50 p-2 rounded">
-                                        <p className="text-[10px] text-yellow-500 font-bold uppercase">Fat</p>
-                                        <p className="font-bold text-yellow-700">{mealLogs[activeMeal].result.fat}g</p>
-                                    </div>
-                                    <div className="bg-blue-50 p-2 rounded">
-                                        <p className="text-[10px] text-blue-500 font-bold uppercase">Carbs</p>
-                                        <p className="font-bold text-blue-700">{mealLogs[activeMeal].result.carbs}g</p>
-                                    </div>
-                                    </div>
-                                    
-                                    <div className="bg-slate-50 p-3 rounded text-sm text-slate-600 flex gap-2 items-start">
-                                    <Sparkles className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" />
-                                    <p className="text-xs leading-relaxed">{mealLogs[activeMeal].result.advice}</p>
-                                    </div>
-                                </div>
-                                )}
+                                    <div><label className="block text-xs font-bold text-slate-500 mb-1">昨晩の睡眠 (時間)</label><input type="number" step="0.5" value={dailyData.sleepHours} onChange={(e) => setDailyData({...dailyData, sleepHours: parseFloat(e.target.value)})} className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none" required /></div>
+                                    <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow-md flex items-center justify-center gap-2">記録してスタート <ChevronRight className="w-5 h-5" /></button>
+                                </form>
                             </div>
-                            )}
-                        </div>
-                        </section>
-
-                        {/* クエスト完了チェック */}
-                        <section className={`bg-white rounded-xl shadow-md p-5 border border-slate-100 transition-opacity ${dailyCheckIn.isFinished ? 'opacity-75 pointer-events-none' : ''}`}>
-                        <h3 className="font-bold text-lg text-slate-700 mb-4 flex items-center gap-2">
-                            <Trophy className="w-5 h-5 text-yellow-500" />
-                            完了報告
-                        </h3>
-                        <div className="space-y-3">
-                            <button 
-                            onClick={() => toggleTask('meal')}
-                            className={`w-full p-4 rounded-lg border transition-all flex items-center justify-between group ${dailyCheckIn.tasks.meal ? 'bg-emerald-50 border-emerald-500 shadow-sm' : 'bg-white border-slate-200 hover:border-emerald-300'}`}
-                            >
-                            <div className="flex items-center gap-3 text-left">
-                                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${dailyCheckIn.tasks.meal ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300'}`}>
-                                {dailyCheckIn.tasks.meal && <CheckCircle className="w-4 h-4 text-white" />}
-                                </div>
-                                <div>
-                                <span className={`block text-sm ${dailyCheckIn.tasks.meal ? 'text-emerald-900 font-bold' : 'text-slate-700 font-medium'}`}>
-                                    食事ルールを守った
-                                </span>
-                                <span className="text-xs text-slate-500">ベジファースト・PFCバランス</span>
-                                </div>
-                            </div>
-                            </button>
-
-                            <button 
-                            onClick={() => toggleTask('workout')}
-                            className={`w-full p-4 rounded-lg border transition-all flex items-center justify-between group ${dailyCheckIn.tasks.workout ? 'bg-blue-50 border-blue-500 shadow-sm' : 'bg-white border-slate-200 hover:border-blue-300'}`}
-                            >
-                            <div className="flex items-center gap-3 text-left">
-                                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${dailyCheckIn.tasks.workout ? 'bg-blue-500 border-blue-500' : 'border-slate-300'}`}>
-                                {dailyCheckIn.tasks.workout && <CheckCircle className="w-4 h-4 text-white" />}
-                                </div>
-                                <div>
-                                <span className={`block text-sm ${dailyCheckIn.tasks.workout ? 'text-blue-900 font-bold' : 'text-slate-700 font-medium'}`}>
-                                    ノルマ達成: {plan.workout}
-                                </span>
-                                <span className="text-xs text-slate-500">詳細メニューは上記確認</span>
-                                </div>
-                            </div>
-                            </button>
-
-                            <button 
-                            onClick={() => toggleTask('sleep')}
-                            className={`w-full p-4 rounded-lg border transition-all flex items-center justify-between group ${dailyCheckIn.tasks.sleep ? 'bg-indigo-50 border-indigo-500 shadow-sm' : 'bg-white border-slate-200 hover:border-indigo-300'}`}
-                            >
-                            <div className="flex items-center gap-3 text-left">
-                                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${dailyCheckIn.tasks.sleep ? 'bg-indigo-500 border-indigo-500' : 'border-slate-300'}`}>
-                                {dailyCheckIn.tasks.sleep && <CheckCircle className="w-4 h-4 text-white" />}
-                                </div>
-                                <div>
-                                <span className={`block text-sm ${dailyCheckIn.tasks.sleep ? 'text-indigo-900 font-bold' : 'text-slate-700 font-medium'}`}>
-                                    就寝準備OK
-                                </span>
-                                <span className="text-xs text-slate-500">スマホを手放し7時間確保</span>
-                                </div>
-                            </div>
-                            </button>
-                        </div>
-                        </section>
-                        
-                        {/* 終了報告ボタン または 完了画面 */}
-                        {!dailyCheckIn.isFinished ? (
-                        <div className="pt-2 pb-6">
-                            <button
-                            onClick={handleFinishDay}
-                            disabled={finishing}
-                            className={`w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all active:scale-95 ${finishing ? 'opacity-70 cursor-wait' : 'hover:bg-slate-700'}`}
-                            >
-                            {finishing ? (
-                                <>
-                                <Loader2 className="w-5 h-5 animate-spin" />
-                                インストラクターが確認 & イラスト作成中...
-                                </>
-                            ) : (
-                                <>
-                                <CheckCircle className="w-5 h-5" />
-                                1日の活動を終了して報告する
-                                </>
-                            )}
-                            </button>
-                            <p className="text-center text-xs text-slate-400 mt-2">
-                            ※ボタンを押すと今日の結果が確定し、<br/>
-                            インストラクターからのコメントと<br/>
-                            <span className="font-bold text-slate-600">応援イラスト</span>が届きます！
-                            </p>
-                        </div>
                         ) : (
-                        /* 完了画面（フィードバック） */
-                        <div className="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl shadow-xl p-6 text-white mb-6 animate-in zoom-in-95 duration-500">
-                            <div className="flex items-center gap-2 mb-4">
-                            <Award className="w-8 h-8 text-yellow-300" />
-                            <div>
-                                <h3 className="font-bold text-xl">Good Job!</h3>
-                                <p className="text-xs text-indigo-100 opacity-90">本日の活動は終了しました</p>
-                            </div>
-                            </div>
-                            
-                            <div className="bg-white/10 rounded-lg p-4 backdrop-blur-sm border border-white/20 relative mb-4">
-                                <div className="absolute -top-3 -left-2 bg-yellow-400 text-slate-900 text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm">
-                                    INSTRUCTOR'S COMMENT
-                                </div>
-                                <div className="flex gap-3">
-                                    <div className="w-10 h-10 rounded-full bg-slate-200 border-2 border-white flex items-center justify-center flex-shrink-0 text-2xl overflow-hidden">
-                                    👨‍🏫
+                            <div className="space-y-6 pt-4">
+                                {/* Sleep Alert */}
+                                {dailyData.sleepHours < 6.5 && (
+                                    <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-lg shadow-sm flex items-start gap-3">
+                                        <AlertCircle className="w-6 h-6 text-amber-500 flex-shrink-0 mt-1" />
+                                        <div><h3 className="font-bold text-amber-800 text-sm">睡眠不足アラート</h3><p className="text-xs text-amber-700 mt-1">睡眠{dailyData.sleepHours}時間。カフェインは14時まで、仮眠推奨。</p></div>
                                     </div>
-                                    <p className="text-sm leading-relaxed font-medium">
-                                    {dailyCheckIn.dailyFeedback}
-                                    </p>
-                                </div>
-                            </div>
+                                )}
 
-                            {/* 生成された応援イラスト表示エリア */}
-                            {dailyCheckIn.dailyImage ? (
-                                <div className="rounded-lg overflow-hidden border-4 border-white/20 shadow-lg relative">
-                                    <img src={dailyCheckIn.dailyImage} alt="Daily Motivation" className="w-full h-auto object-cover" />
-                                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-3">
-                                        <p className="text-xs text-white font-bold flex items-center gap-1">
-                                            <ImageIcon className="w-3 h-3" /> AI Generated Reward
-                                        </p>
+                                {/* Daily Plan */}
+                                <section className={`rounded-xl shadow-lg border-2 overflow-hidden ${plan.color.replace('text-', 'border-').replace('bg-', 'bg-white ')}`}>
+                                    <div className={`p-4 ${plan.color} flex justify-between items-center`}>
+                                        <h2 className="font-bold text-lg flex items-center gap-2"><Calendar className="w-5 h-5" /> {isPlanLoading ? "最適化中..." : "今日のミッション"}</h2>
+                                        <span className="text-xs font-bold px-2 py-1 bg-white/60 rounded text-slate-800 uppercase tracking-wider">{plan.type}</span>
                                     </div>
-                                </div>
-                            ) : (
-                                <div className="bg-white/5 rounded-lg h-32 flex flex-col items-center justify-center text-white/50 border border-dashed border-white/20">
-                                    <ImageIcon className="w-8 h-8 mb-1 opacity-50" />
-                                    <span className="text-xs">No image generated</span>
-                                </div>
-                            )}
+                                    <div className="p-5 bg-white relative">
+                                        {isPlanLoading && <div className="absolute inset-0 bg-white/90 z-10 flex flex-col items-center justify-center text-slate-500"><Loader2 className="w-10 h-10 animate-spin text-blue-500 mb-2" /><p className="text-sm font-bold animate-pulse">AIがプラン生成中...</p></div>}
+                                        <h3 className="text-2xl font-bold text-slate-800 mb-3 flex items-center gap-2">{plan.title} {aiPlan && <Sparkles className="w-5 h-5 text-yellow-500" />}</h3>
+                                        <div className="space-y-4">
+                                            <div className="bg-slate-50 p-4 rounded-lg border border-slate-100"><div className="flex items-center gap-2 mb-2"><Activity className="w-4 h-4 text-blue-500" /><p className="text-sm font-bold text-slate-700">運動指示</p></div><p className="text-slate-700 font-bold mb-1">{plan.workout}</p><p className="text-xs text-slate-500 border-t border-slate-200 pt-2 mt-2">{plan.workoutDetail}</p></div>
+                                            <div className="bg-slate-50 p-4 rounded-lg border border-slate-100">
+                                                <div className="flex items-center justify-between mb-2"><div className="flex items-center gap-2"><Utensils className="w-4 h-4 text-emerald-500" /><p className="text-sm font-bold text-slate-700">食事ガイド</p></div><div className="flex items-center gap-1 text-xs font-bold bg-white px-2 py-1 rounded border border-slate-200 text-emerald-600"><Flame className="w-3 h-3 fill-emerald-600" /> 目標: {plan.targetCalories} kcal</div></div>
+                                                <ul className="text-xs text-slate-600 space-y-2 mb-3"><li><span className="font-bold text-emerald-600">朝:</span> {plan.dietDetail.breakfast}</li><li><span className="font-bold text-emerald-600">昼:</span> {plan.dietDetail.lunch}</li><li><span className="font-bold text-emerald-600">夜:</span> {plan.dietDetail.dinner}</li></ul>
+                                                <div className="bg-emerald-50 p-2 rounded text-xs text-emerald-800 font-bold border border-emerald-100">POINT: {plan.dietDetail.focus}</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </section>
 
-                            <div className="mt-4 flex justify-between items-center text-xs text-indigo-100">
-                            <span>明日もこの調子で！</span>
-                            <div className="flex gap-1">
-                                {[1,2,3].map(i => <Star key={i} className="w-4 h-4 text-yellow-300 fill-yellow-300" />)}
+                                {/* Meal Logs & AI Analysis */}
+                                <section className={`bg-gradient-to-r from-emerald-500 to-teal-600 rounded-xl shadow-lg p-5 text-white transition-opacity ${dailyData.isFinished ? 'opacity-75 pointer-events-none grayscale-[0.5]' : ''}`}>
+                                    <div className="flex justify-between items-center mb-4">
+                                        <div>
+                                            <h3 className="font-bold flex items-center gap-2"><Camera className="w-5 h-5" /> 食事記録 & AI分析</h3>
+                                            <div className="flex items-baseline gap-2 mt-1"><p className="text-xs text-emerald-100 opacity-90">Total: <span className="text-lg font-bold">{totalCalories}</span> / {plan.targetCalories} kcal</p><span className={`text-xs font-bold px-1.5 rounded ${totalCalories > plan.targetCalories ? 'bg-red-500' : 'bg-emerald-700'}`}>{caloriesProgress.toFixed(0)}%</span></div>
+                                            <div className="w-full bg-black/20 h-1.5 rounded-full mt-1 max-w-[200px]"><div className={`h-full rounded-full transition-all duration-500 ${totalCalories > plan.targetCalories ? 'bg-red-400' : 'bg-white'}`} style={{ width: `${Math.min(100, (totalCalories / plan.targetCalories) * 100)}%` }}></div></div>
+                                        </div>
+                                        <span className="text-xs bg-white/20 px-2 py-1 rounded text-white font-bold">Imagen 4</span>
+                                    </div>
+                                    <div className="flex p-1 bg-black/20 rounded-lg mb-4">
+                                        {[{ id: 'breakfast', icon: Coffee, label: '朝' }, { id: 'lunch', icon: Sun, label: '昼' }, { id: 'dinner', icon: Sunset, label: '夜' }].map((meal) => (
+                                            <button key={meal.id} onClick={() => setActiveMeal(meal.id)} className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-md text-sm font-bold transition-all ${activeMeal === meal.id ? 'bg-white text-teal-700 shadow-sm' : 'text-white/60 hover:bg-white/10'}`}>
+                                                <meal.icon className="w-3 h-3" /> {meal.label} {mealLogs[meal.id].result && <span className="ml-1 w-2 h-2 rounded-full bg-emerald-400"></span>}{mealLogs[meal.id].skipped && <span className="ml-1 w-2 h-2 rounded-full bg-slate-400"></span>}
+                                            </button>
+                                        ))}
+                                    </div>
+                                    <div className="animate-in fade-in slide-in-from-right-2 duration-300" key={activeMeal}>
+                                        {mealLogs[activeMeal].skipped ? (
+                                            <div className="bg-black/20 rounded-lg p-6 flex flex-col items-center justify-center text-center"><Ban className="w-10 h-10 text-white/50 mb-2" /><p className="font-bold text-white">欠食 (Skipped)</p><button onClick={() => handleResetMeal(activeMeal)} className="mt-2 bg-white/20 text-xs px-4 py-2 rounded-full flex items-center gap-1"><Undo2 className="w-3 h-3" /> 取消</button></div>
+                                        ) : !mealLogs[activeMeal].image ? (
+                                            <div className="space-y-3">
+                                                <button onClick={() => fileInputRef.current.click()} className="w-full bg-white/10 hover:bg-white/20 border-2 border-dashed border-white/30 rounded-lg p-6 flex flex-col items-center justify-center"><Camera className="w-8 h-8 mb-2 text-white/80" /><span className="text-sm font-bold">写真を撮る</span><input type="file" ref={fileInputRef} accept="image/*" className="hidden" onChange={handleImageUpload} /></button>
+                                                <button onClick={() => handleSkipMeal(activeMeal)} className="w-full text-white/60 text-xs py-2 flex items-center justify-center gap-1"><Ban className="w-3 h-3" /> 欠食記録</button>
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-4">
+                                                <div className="relative rounded-lg overflow-hidden h-40 bg-black/20 flex items-center justify-center">
+                                                    <img src={mealLogs[activeMeal].image} alt="Food" className="h-full w-full object-cover opacity-90" />
+                                                    {analyzing ? <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-white mb-2" /><span className="text-sm font-bold">AI分析中...</span></div> : 
+                                                    <button onClick={() => handleResetMeal(activeMeal)} className="absolute top-2 right-2 bg-black/50 p-1.5 rounded-full text-white hover:bg-black/70"><RefreshCw className="w-4 h-4" /></button>}
+                                                </div>
+                                                {mealLogs[activeMeal].result && (
+                                                    <div className="bg-white text-slate-800 rounded-lg p-4 shadow-sm">
+                                                        <h4 className="font-bold text-lg mb-1 border-b border-slate-100 pb-2 flex justify-between">{mealLogs[activeMeal].result.name}<span className="text-emerald-600 font-extrabold">{mealLogs[activeMeal].result.calories} kcal</span></h4>
+                                                        <div className="grid grid-cols-3 gap-2 my-3 text-center">
+                                                            <div className="bg-red-50 p-2 rounded"><p className="text-[10px] text-red-500 font-bold">PRO</p><p className="font-bold text-red-700">{mealLogs[activeMeal].result.protein}g</p></div>
+                                                            <div className="bg-yellow-50 p-2 rounded"><p className="text-[10px] text-yellow-500 font-bold">FAT</p><p className="font-bold text-yellow-700">{mealLogs[activeMeal].result.fat}g</p></div>
+                                                            <div className="bg-blue-50 p-2 rounded"><p className="text-[10px] text-blue-500 font-bold">CARB</p><p className="font-bold text-blue-700">{mealLogs[activeMeal].result.carbs}g</p></div>
+                                                        </div>
+                                                        <div className="bg-slate-50 p-3 rounded text-sm text-slate-600 flex gap-2 items-start"><Sparkles className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" /><p className="text-xs">{mealLogs[activeMeal].result.advice}</p></div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                </section>
+
+                                {/* Check List */}
+                                <section className={`bg-white rounded-xl shadow-md p-5 border border-slate-100 transition-opacity ${dailyData.isFinished ? 'opacity-75 pointer-events-none' : ''}`}>
+                                    <h3 className="font-bold text-lg text-slate-700 mb-4 flex items-center gap-2"><Trophy className="w-5 h-5 text-yellow-500" /> 完了報告</h3>
+                                    <div className="space-y-3">
+                                        <button onClick={() => toggleTask('meal')} className={`w-full p-4 rounded-lg border transition-all flex items-center gap-3 text-left ${dailyData.tasks.meal ? 'bg-emerald-50 border-emerald-500' : 'bg-white hover:border-emerald-300'}`}>
+                                            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${dailyData.tasks.meal ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300'}`}>{dailyData.tasks.meal && <CheckCircle className="w-4 h-4 text-white" />}</div>
+                                            <div><span className={`block text-sm ${dailyData.tasks.meal ? 'text-emerald-900 font-bold' : 'text-slate-700 font-medium'}`}>食事ルールを守った</span></div>
+                                        </button>
+                                        <button onClick={() => toggleTask('workout')} className={`w-full p-4 rounded-lg border transition-all flex items-center gap-3 text-left ${dailyData.tasks.workout ? 'bg-blue-50 border-blue-500' : 'bg-white hover:border-blue-300'}`}>
+                                            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${dailyData.tasks.workout ? 'bg-blue-500 border-blue-500' : 'border-slate-300'}`}>{dailyData.tasks.workout && <CheckCircle className="w-4 h-4 text-white" />}</div>
+                                            <div><span className={`block text-sm ${dailyData.tasks.workout ? 'text-blue-900 font-bold' : 'text-slate-700 font-medium'}`}>ノルマ達成: {plan.workout}</span></div>
+                                        </button>
+                                        <button onClick={() => toggleTask('sleep')} className={`w-full p-4 rounded-lg border transition-all flex items-center gap-3 text-left ${dailyData.tasks.sleep ? 'bg-indigo-50 border-indigo-500' : 'bg-white hover:border-indigo-300'}`}>
+                                            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${dailyData.tasks.sleep ? 'bg-indigo-500 border-indigo-500' : 'border-slate-300'}`}>{dailyData.tasks.sleep && <CheckCircle className="w-4 h-4 text-white" />}</div>
+                                            <div><span className={`block text-sm ${dailyData.tasks.sleep ? 'text-indigo-900 font-bold' : 'text-slate-700 font-medium'}`}>就寝準備OK</span></div>
+                                        </button>
+                                    </div>
+                                </section>
+
+                                {/* Finish Button / Result */}
+                                {!dailyData.isFinished ? (
+                                    <div className="pt-2 pb-6">
+                                        <button onClick={handleFinishDay} disabled={finishing} className={`w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all active:scale-95 ${finishing ? 'opacity-70 cursor-wait' : 'hover:bg-slate-700'}`}>
+                                            {finishing ? <><Loader2 className="w-5 h-5 animate-spin" /> 作成中...</> : <><CheckCircle className="w-5 h-5" /> 1日を終了して報告</>}
+                                        </button>
+                                        <p className="text-center text-xs text-slate-400 mt-2">※確定するとコメントと応援イラストが届きます</p>
+                                    </div>
+                                ) : (
+                                    <div className="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl shadow-xl p-6 text-white mb-6 animate-in zoom-in-95 duration-500">
+                                        <div className="flex items-center gap-2 mb-4"><Award className="w-8 h-8 text-yellow-300" /><div><h3 className="font-bold text-xl">Good Job!</h3><p className="text-xs text-indigo-100 opacity-90">活動記録を保存しました</p></div></div>
+                                        <div className="bg-white/10 rounded-lg p-4 backdrop-blur-sm border border-white/20 relative mb-4">
+                                            <div className="absolute -top-3 -left-2 bg-yellow-400 text-slate-900 text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm">INSTRUCTOR'S COMMENT</div>
+                                            <div className="flex gap-3"><div className="w-10 h-10 rounded-full bg-slate-200 border-2 border-white flex items-center justify-center flex-shrink-0 text-2xl overflow-hidden">👨‍🏫</div><p className="text-sm leading-relaxed font-medium">{dailyData.dailyFeedback}</p></div>
+                                        </div>
+                                        {dailyData.dailyImage ? (
+                                            <div className="rounded-lg overflow-hidden border-4 border-white/20 shadow-lg relative"><img src={dailyData.dailyImage} alt="Reward" className="w-full h-auto object-cover" /><div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-3"><p className="text-xs text-white font-bold flex items-center gap-1"><ImageIcon className="w-3 h-3" /> AI Generated Reward (Imagen 4)</p></div></div>
+                                        ) : (
+                                            <div className="bg-white/5 rounded-lg h-32 flex flex-col items-center justify-center text-white/50 border border-dashed border-white/20"><ImageIcon className="w-8 h-8 mb-1 opacity-50" /><span className="text-xs">No image (保存されません)</span></div>
+                                        )}
+                                        <div className="mt-4 flex justify-between items-center text-xs text-indigo-100"><span>明日もこの調子で！</span><div className="flex gap-1">{[1,2,3].map(i => <Star key={i} className="w-4 h-4 text-yellow-300 fill-yellow-300" />)}</div></div>
+                                    </div>
+                                )}
+
+                                <div className="text-center pt-8 pb-4">
+                                    <button onClick={handleDailyReset} className="text-xs text-slate-300 flex items-center justify-center gap-1 mx-auto hover:text-red-400 transition-colors"><RefreshCw className="w-3 h-3" /> 今日の記録をリセット</button>
+                                </div>
                             </div>
-                            </div>
-                        </div>
                         )}
-                        
-                        <div className="text-center pt-8 pb-4">
-                        <button 
-                            onClick={handleDailyReset}
-                            className="text-xs text-slate-300 flex items-center justify-center gap-1 mx-auto hover:text-red-400 transition-colors"
-                        >
-                            <RefreshCw className="w-3 h-3" /> 今日の記録をリセット
-                        </button>
+                    </main>
+                    <footer className="fixed bottom-0 w-full bg-white/90 backdrop-blur border-t border-slate-200 p-3 text-center text-[10px] text-slate-400 z-50">Professional Diet Instructor System v3.0 (Cloud)</footer>
+
+                    {/* Settings Modal */}
+                    {showSettings && (
+                        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+                                <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold flex items-center gap-2"><Settings className="w-5 h-5 text-slate-500" /> 設定</h3><button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button></div>
+                                <div className="space-y-4">
+                                    <div><label className="block text-sm font-bold text-slate-600 mb-1">Google Gemini APIキー</label><input type="password" value={tempApiKey} onChange={(e) => setTempApiKey(e.target.value)} className="w-full p-2 border rounded-lg text-sm" placeholder="AIzaSy..." /><p className="text-xs text-slate-400 mt-1">※設定はクラウドに保存され、他端末でも有効になります。</p></div>
+                                    <button onClick={handleSaveApiKey} className="w-full bg-emerald-600 text-white font-bold py-2 rounded-lg">保存する</button>
+                                </div>
+                            </div>
                         </div>
-                    </div>
                     )}
-                </main>
-                
-                {/* 簡易フッター */}
-                <footer className="fixed bottom-0 w-full bg-white/90 backdrop-blur border-t border-slate-200 p-3 text-center text-[10px] text-slate-400 z-50">
-                    Professional Diet Instructor System v2.7 | Stay Consistent.
-                </footer>
                 </div>
             );
         }
