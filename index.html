@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Diet Partner App (Fixed Config)</title>
+    <title>Diet Partner App (Fixed Analysis)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Babel for JSX -->
@@ -43,7 +43,7 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js';
         import { getFirestore, collection, doc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js';
 
-        // ユーザーから提供された正しい設定値を反映
+        // 以前ご提示いただいた正しい設定値です
         const myFirebaseConfig = {
             apiKey: "AIzaSyBa2rDeNwHi5oy5xNY-fYwfqZUakmMnZgE",
             authDomain: "diet-patner-app.firebaseapp.com",
@@ -65,13 +65,14 @@
             auth = getAuth(app);
             db = getFirestore(app);
             
+            // React側から参照できるようにグローバル公開
             window.db = db;
             window.auth = auth;
             window.appId = appId;
             window.signInWithCustomToken = signInWithCustomToken;
             window.signInAnonymously = signInAnonymously;
-            window.firebaseLoaded = true; 
-            window.firebaseConfigUsed = firebaseConfig;
+            window.firebaseLoaded = true; // 読み込み完了フラグ
+            window.firebaseConfigUsed = firebaseConfig; // デバッグ用に設定を保存
             
             console.log("Firebase initialized successfully");
         } catch (e) {
@@ -221,9 +222,6 @@
                     if (firebaseConfigUsed) {
                         const maskedKey = firebaseConfigUsed.apiKey ? firebaseConfigUsed.apiKey.substring(0, 5) + "..." : "undefined";
                         addLog(`API Key used: ${maskedKey}`);
-                        if (maskedKey === "YOUR_...") {
-                            addLog("Error: Default API Key detected. Please update config.", 'error');
-                        }
                     }
 
                     if (!auth || !firebaseLoaded) {
@@ -441,23 +439,62 @@
             const analyzeImage = async (base64Image, mealType) => {
                 if (!profile.apiKey) { alert("APIキーが必要です"); openSettings(); return; }
                 setAnalyzing(true);
+                
+                // MIMEタイプを動的に取得
+                const mimeType = base64Image.match(/data:([^;]+);/)?.[1] || "image/jpeg";
                 const base64Data = base64Image.split(',')[1];
+                
                 const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${profile.apiKey}`;
-                const payload = { contents: [{ parts: [{ text: "料理分析: カロリー(kcal), PFC(g), アドバイスをJSON(name, calories, protein, fat, carbs, advice)で。" }, { inlineData: { mimeType: "image/jpeg", data: base64Data } }] }], generationConfig: { responseMimeType: "application/json" } };
+                
+                // 元の丁寧なプロンプトに戻しました
+                const promptText = `
+                この料理画像を分析し、以下の情報をJSON形式のみで出力してください。
+                Markdownのコードブロックは不要です。数値は半角数字のみ。
+                
+                {
+                  "name": "料理名（短く）",
+                  "calories": 0,
+                  "protein": 0,
+                  "fat": 0,
+                  "carbs": 0,
+                  "advice": "100文字以内の栄養アドバイス"
+                }
+                `;
+
+                const payload = { 
+                    contents: [{ 
+                        parts: [
+                            { text: promptText }, 
+                            { inlineData: { mimeType: mimeType, data: base64Data } }
+                        ] 
+                    }], 
+                    generationConfig: { responseMimeType: "application/json" } 
+                };
+
                 try {
+                    addLog(`Analyzing image (${mimeType})...`);
                     const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                     const data = await res.json();
-                    if(data.candidates) {
-                        const result = JSON.parse(data.candidates[0].content.parts[0].text);
+                    
+                    if (data.error) {
+                        throw new Error(data.error.message);
+                    }
+
+                    if(data.candidates && data.candidates[0].content) {
+                        const rawText = data.candidates[0].content.parts[0].text;
+                        addLog(`AI Response: ${rawText.substring(0, 50)}...`);
+                        
+                        const result = JSON.parse(rawText);
                         const newMealLogs = { ...mealLogs, [mealType]: { image: base64Image, result: result, skipped: false } };
                         setMealLogs(newMealLogs);
                         saveDailyData(dailyData, newMealLogs, aiPlan);
                     }
                 } catch(e) { 
-                    addLog(`Image Analyze Error: ${e.message}`, 'error');
-                    alert("解析エラー"); 
+                    addLog(`Analyze Error: ${e.message}`, 'error');
+                    alert(`解析エラー: ${e.message}`); 
+                } finally {
+                    setAnalyzing(false);
                 }
-                setAnalyzing(false);
             };
 
             const handleSkipMeal = (type) => { 
