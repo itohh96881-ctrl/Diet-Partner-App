@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+    <!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Diet Partner App (Cloud Sync)</title>
+    <title>Diet Partner App (Cloud Sync & Debug)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Babel for JSX -->
@@ -29,6 +29,9 @@
             background: linear-gradient(to right, #f1f5f9 4%, #e2e8f0 25%, #f1f5f9 36%);
             background-size: 1000px 100%;
         }
+        /* Custom Scrollbar for log */
+        .log-scroll::-webkit-scrollbar { width: 6px; }
+        .log-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
     </style>
 </head>
 <body class="bg-slate-50">
@@ -43,35 +46,36 @@
         // =================================================================
         // 【重要】ご自身の環境で使う場合は、以下の値を書き換えてください
         // =================================================================
-        // 1. Firebaseコンソール (https://console.firebase.google.com/) でプロジェクト作成
-        // 2. Authenticationで「匿名ログイン」を有効化
-        // 3. Firestore Databaseを作成（テストモード推奨）
-        // 4. プロジェクト設定 > マイアプリ > ウェブアプリを追加 してconfigを取得
-        // 5. 以下の { } の中身を、取得した内容で書き換えてください
-        const myFirebaseConfig = {
+        const myFirebaseConfig = const firebaseConfig = {
           apiKey: "AIzaSyBa2rDeNwHi5oy5xNY-fYwfqZUakmMnZgE",
           authDomain: "diet-patner-app.firebaseapp.com",
           projectId: "diet-patner-app",
           storageBucket: "diet-patner-app.firebasestorage.app",
           messagingSenderId: "507433854484",
           appId: "1:507433854484:web:36372f9b7d16e6b4dc6901"
-         };
+        };
         // =================================================================
+
+        // 設定チェック
+        window.isConfigDefault = myFirebaseConfig.apiKey === "YOUR_API_KEY";
 
         // プレビュー環境では自動提供される設定を使い、それ以外（ローカル等）では上記の設定を使います
         const firebaseConfig = window.__firebase_config ? JSON.parse(window.__firebase_config) : myFirebaseConfig;
         
-        // アプリID（Firestoreの保存パスに使われます。変更してもOKです）
+        // アプリID（Firestoreの保存パスに使われます）
         const appId = window.__app_id || 'diet-partner-app';
         const initialAuthToken = window.__initial_auth_token;
 
         let app, auth, db;
+        let initError = null;
+
         try {
             app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
         } catch (e) {
-            console.error("Firebase initialization failed. Config might be missing.", e);
+            console.error("Firebase initialization failed.", e);
+            initError = e.message;
         }
 
         // Reactコンポーネントからアクセスできるようにwindowに公開
@@ -81,6 +85,8 @@
         window.initialAuthToken = initialAuthToken;
         window.signInWithCustomToken = signInWithCustomToken;
         window.signInAnonymously = signInAnonymously;
+        window.firebaseInitError = initError;
+        window.firebaseConfigUsed = firebaseConfig; // デバッグ用
     </script>
 
     <script type="text/babel" data-type="module">
@@ -90,10 +96,10 @@
             Activity, Utensils, Bed, CheckCircle, Scale, Calendar, Trophy, 
             ChevronRight, RefreshCw, AlertCircle, TrendingDown, Moon, 
             Camera, Loader2, Sparkles, Coffee, Sun, Sunset, Flame, Ban, 
-            Undo2, Award, Star, Settings, X, Key, BrainCircuit, ImageIcon, Trash2, Cloud, CloudOff
+            Undo2, Award, Star, Settings, X, Key, BrainCircuit, ImageIcon, Trash2, Cloud, CloudOff, AlertTriangle, Terminal
         } from 'lucide-react';
 
-        // Firebase modules from CDN (for inside React)
+        // Firebase modules from CDN
         import { onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
         import { doc, setDoc, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
@@ -154,6 +160,14 @@
             const [today, setToday] = useState(new Date());
             const [loading, setLoading] = useState(true);
             const [syncError, setSyncError] = useState(false);
+            const [logs, setLogs] = useState([]); // デバッグログ
+
+            const addLog = (msg, type = 'info') => {
+                const timestamp = new Date().toLocaleTimeString();
+                setLogs(prev => [`[${timestamp}] ${msg}`, ...prev]);
+                if (type === 'error') console.error(msg);
+                else console.log(msg);
+            };
 
             // データステート
             const [profile, setProfile] = useState({ weight: 84.6, bfp: 20.4, apiKey: "" });
@@ -170,7 +184,7 @@
                 tasks: { meal: false, workout: false, sleep: false },
                 isFinished: false,
                 dailyFeedback: null,
-                dailyImage: null // 画像はローカルメモリのみ（リロードで消えます）
+                dailyImage: null
             });
             const [mealLogs, setMealLogs] = useState({
                 breakfast: { image: null, result: null, skipped: false },
@@ -187,13 +201,12 @@
             const [isPlanLoading, setIsPlanLoading] = useState(false);
             const fileInputRef = useRef(null);
 
-            // 今日の日付ID (YYYY-MM-DD)
+            // 今日の日付ID
             const todayDocId = useMemo(() => {
                 const d = new Date();
                 return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
             }, [today]);
 
-            // プラン選択ロジック
             const plan = useMemo(() => {
                 if (aiPlan) return aiPlan;
                 return WEEKLY_PLAN_BASE[today.getDay()];
@@ -202,20 +215,33 @@
             // 認証と初期化
             useEffect(() => {
                 const initAuth = async () => {
-                    const { auth, initialAuthToken, signInWithCustomToken, signInAnonymously } = window;
-                    if (!auth) {
+                    const { auth, initialAuthToken, signInWithCustomToken, signInAnonymously, firebaseInitError } = window;
+                    
+                    if (firebaseInitError) {
+                        addLog(`Firebase Init Error: ${firebaseInitError}`, 'error');
                         setSyncError(true);
                         setLoading(false);
                         return;
                     }
+
+                    if (!auth) {
+                        addLog("Auth module not found.", 'error');
+                        setSyncError(true);
+                        setLoading(false);
+                        return;
+                    }
+
                     try {
+                        addLog("Authenticating...");
                         if (initialAuthToken) {
                             await signInWithCustomToken(auth, initialAuthToken);
+                            addLog("Signed in with custom token.");
                         } else {
                             await signInAnonymously(auth);
+                            addLog("Signed in anonymously.");
                         }
                     } catch (error) {
-                        console.error("Auth failed", error);
+                        addLog(`Auth Failed: ${error.message}`, 'error');
                         setSyncError(true);
                         setLoading(false);
                     }
@@ -225,7 +251,12 @@
                 if (window.auth) {
                     const unsubscribe = onAuthStateChanged(window.auth, (currentUser) => {
                         setUser(currentUser);
-                        if (!currentUser) setLoading(false);
+                        if (currentUser) {
+                            addLog(`User: ${currentUser.uid}`);
+                        } else {
+                            addLog("User logged out or null.");
+                            setLoading(false);
+                        }
                     });
                     return () => unsubscribe();
                 } else {
@@ -237,6 +268,12 @@
             useEffect(() => {
                 if (!user) return;
                 const { db, appId } = window;
+                if (!db) {
+                    addLog("Firestore DB not initialized.", 'error');
+                    return;
+                }
+
+                addLog(`Syncing data for user: ${user.uid}`);
                 const userDocRef = (col) => doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', col);
 
                 // Profile
@@ -244,7 +281,10 @@
                     if (docSnap.exists()) {
                         setProfile(prev => ({ ...prev, ...docSnap.data() }));
                     }
-                }, (err) => { console.error(err); setSyncError(true); });
+                }, (err) => { 
+                    addLog(`Profile Sync Error: ${err.message}`, 'error');
+                    setSyncError(true); 
+                });
 
                 // History
                 const unsubHistory = onSnapshot(userDocRef('history'), (docSnap) => {
@@ -258,12 +298,11 @@
                     setLoading(false);
                     if (docSnap.exists()) {
                         const data = docSnap.data();
-                        setDailyData(prev => ({ ...prev, ...data.checkIn })); // 画像はDBにないのでnullになる
+                        setDailyData(prev => ({ ...prev, ...data.checkIn }));
                         if (data.mealLogs) {
                             setMealLogs(prev => {
                                 const newLogs = {};
                                 Object.keys(data.mealLogs).forEach(key => {
-                                    // ローカルメモリに画像がある場合は維持を試みる（リロードすると消える）
                                     newLogs[key] = { ...data.mealLogs[key], image: prev[key]?.image || null };
                                 });
                                 return newLogs;
@@ -271,54 +310,51 @@
                         }
                         if (data.aiPlan) setAiPlan(data.aiPlan);
                     }
+                }, (err) => {
+                    addLog(`Daily Data Sync Error: ${err.message}`, 'error');
+                    setLoading(false);
                 });
 
                 return () => { unsubProfile(); unsubHistory(); unsubDaily(); };
             }, [user, todayDocId]);
 
-            // 保存処理ラッパー
-            const saveDailyData = async (newCheckIn, newMealLogs, newAiPlan) => {
+            // 保存処理
+            const saveToFirestore = async (col, data) => {
                 if (!user) return;
                 const { db, appId } = window;
-                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', todayDocId);
-                
-                // 画像データ(Base64)は容量制限のためDB保存から除外
+                try {
+                    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', col);
+                    await setDoc(docRef, data, { merge: true });
+                } catch (e) {
+                    addLog(`Save Error (${col}): ${e.message}`, 'error');
+                    setSyncError(true);
+                }
+            };
+
+            const saveDailyData = (newCheckIn, newMealLogs, newAiPlan) => {
                 const cleanCheckIn = { ...newCheckIn, dailyImage: null };
                 const cleanMealLogs = {};
                 Object.keys(newMealLogs || mealLogs).forEach(key => {
                     const log = newMealLogs?.[key] || mealLogs[key];
                     cleanMealLogs[key] = { ...log, image: null };
                 });
-
-                await setDoc(docRef, {
+                saveToFirestore(todayDocId, {
                     checkIn: cleanCheckIn,
                     mealLogs: cleanMealLogs,
                     aiPlan: newAiPlan || aiPlan,
                     updatedAt: new Date().toISOString()
-                }, { merge: true });
+                });
             };
 
-            const saveProfile = async (newProfile) => {
-                if (!user) return;
-                const { db, appId } = window;
-                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', 'profile');
-                await setDoc(docRef, newProfile, { merge: true });
-            };
-
-            const saveHistory = async (newHistory) => {
-                if (!user) return;
-                const { db, appId } = window;
-                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', 'history');
-                await setDoc(docRef, { records: newHistory }, { merge: true });
-            };
+            const saveProfile = (newProfile) => saveToFirestore('profile', newProfile);
+            const saveHistory = (newHistory) => saveToFirestore('history', { records: newHistory });
 
             // ハンドラー
             const handleSaveApiKey = () => {
                 const newProfile = { ...profile, apiKey: tempApiKey };
                 setProfile(newProfile);
                 saveProfile(newProfile);
-                setShowSettings(false);
-                alert("APIキーをクラウドに保存しました！");
+                alert("APIキーを保存しました（クラウド同期）");
             };
 
             const openSettings = () => {
@@ -347,7 +383,9 @@
                         setAiPlan(plan);
                         saveDailyData(dailyData, mealLogs, plan);
                     }
-                } catch(e) { console.error(e); }
+                } catch(e) { 
+                    addLog(`Plan Gen Error: ${e.message}`, 'error');
+                }
                 setIsPlanLoading(false);
             };
 
@@ -385,7 +423,6 @@
                 if (file) {
                     const reader = new FileReader();
                     reader.onloadend = () => {
-                        // ローカル表示用に即時反映
                         setMealLogs(prev => ({ ...prev, [activeMeal]: { ...prev[activeMeal], image: reader.result } }));
                         analyzeImage(reader.result, activeMeal);
                     };
@@ -409,7 +446,10 @@
                         setMealLogs(newMealLogs);
                         saveDailyData(dailyData, newMealLogs, aiPlan);
                     }
-                } catch(e) { alert("解析エラー"); }
+                } catch(e) { 
+                    addLog(`Image Analyze Error: ${e.message}`, 'error');
+                    alert("解析エラー"); 
+                }
                 setAnalyzing(false);
             };
 
@@ -436,7 +476,7 @@
                 setFinishing(true);
                 const textPrompt = `ダイエットコーチとしてフィードバック(100文字)。目標65kg, 現在${profile.weight}kg, 摂取${totalCalories}/${plan.targetCalories}kcal, 達成:食${dailyData.tasks.meal?1:0}/運${dailyData.tasks.workout?1:0}/睡${dailyData.tasks.sleep?1:0}`;
                 const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${profile.apiKey}`;
-                // Imagen 4 (Nano Banana Pro)
+                // Imagen 4
                 const imageUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${profile.apiKey}`;
                 
                 let feedback = "お疲れ様！";
@@ -444,24 +484,20 @@
                 let errorMessage = "";
                 
                 try {
-                    // Text Gen
                     const tRes = await fetch(textUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: textPrompt }] }] }) });
                     const tData = await tRes.json();
                     if(tData.candidates) feedback = tData.candidates[0].content.parts[0].text;
 
-                    // Image Gen (Imagen 4)
                     const feeling = dailyData.tasks.workout ? "energetic" : "relaxing";
                     const iRes = await fetch(imageUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instances: [{ prompt: `Anime style fitness motivation poster, Theme: ${feeling}, fit person thumbs up` }], parameters: { sampleCount: 1 } }) });
                     const iData = await iRes.json();
-                    
-                    if (iData.error) {
-                        errorMessage = `画像生成エラー: ${iData.error.message}`;
-                    } else if (iData.predictions?.[0]?.bytesBase64Encoded) {
-                        image = `data:image/png;base64,${iData.predictions[0].bytesBase64Encoded}`;
-                    } else {
-                        errorMessage = "画像生成失敗";
-                    }
-                } catch(e) { console.error(e); errorMessage = "通信エラー"; }
+                    if (iData.error) errorMessage = `画像生成エラー: ${iData.error.message}`;
+                    else if (iData.predictions?.[0]?.bytesBase64Encoded) image = `data:image/png;base64,${iData.predictions[0].bytesBase64Encoded}`;
+                    else errorMessage = "画像生成失敗";
+                } catch(e) { 
+                    addLog(`Finish Day Error: ${e.message}`, 'error');
+                    errorMessage = "通信エラー"; 
+                }
 
                 if (errorMessage) feedback += `\n(※${errorMessage})`;
 
@@ -505,6 +541,12 @@
                     </header>
 
                     <main className="max-w-md mx-auto px-4 -mt-4 relative z-20">
+                        {window.isConfigDefault && (
+                            <div className="mb-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative">
+                                <strong className="font-bold">設定未完了: </strong>
+                                <span className="block sm:inline text-xs">HTMLファイル内の <code>myFirebaseConfig</code> を書き換えてください。</span>
+                            </div>
+                        )}
                         {!dailyData.isCheckedIn ? (
                             <div className="bg-white rounded-xl shadow-xl p-6 mb-6 border border-slate-100">
                                 <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700"><Scale className="w-5 h-5 text-blue-500" /> モーニング・チェックイン</h2>
@@ -576,13 +618,35 @@
                     </main>
                     <footer className="fixed bottom-0 w-full bg-white/90 backdrop-blur border-t border-slate-200 p-3 text-center text-[10px] text-slate-400 z-50">Professional Diet Instructor System v3.2 (Cloud)</footer>
 
+                    {/* Settings Modal */}
                     {showSettings && (
                         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-                            <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+                            <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm flex flex-col max-h-[80vh]">
                                 <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold flex items-center gap-2"><Settings className="w-5 h-5 text-slate-500" /> 設定</h3><button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button></div>
-                                <div className="space-y-4">
-                                    <div><label className="block text-sm font-bold text-slate-600 mb-1">Google Gemini APIキー</label><input type="password" value={tempApiKey} onChange={(e) => setTempApiKey(e.target.value)} className="w-full p-2 border rounded-lg text-sm" placeholder="AIzaSy..." /><p className="text-xs text-slate-400 mt-1">※設定はクラウドに保存され、他端末でも有効になります。</p></div>
-                                    <button onClick={handleSaveApiKey} className="w-full bg-emerald-600 text-white font-bold py-2 rounded-lg">保存する</button>
+                                <div className="overflow-y-auto space-y-4">
+                                    <section>
+                                        <h4 className="text-xs font-bold text-slate-500 mb-2 uppercase">API Settings</h4>
+                                        <label className="block text-sm font-bold text-slate-600 mb-1">Google Gemini APIキー</label>
+                                        <input type="password" value={tempApiKey} onChange={(e) => setTempApiKey(e.target.value)} className="w-full p-2 border rounded-lg text-sm mb-2" placeholder="AIzaSy..." />
+                                        <button onClick={handleSaveApiKey} className="w-full bg-emerald-600 text-white font-bold py-2 rounded-lg">保存する</button>
+                                    </section>
+                                    
+                                    <section>
+                                        <h4 className="text-xs font-bold text-slate-500 mb-2 uppercase">Connection Diagnostics</h4>
+                                        <div className="bg-slate-100 p-3 rounded-lg text-xs font-mono">
+                                            <div className="flex justify-between mb-1"><span>Auth Status:</span> <span className={user ? "text-green-600 font-bold" : "text-red-500 font-bold"}>{user ? "Authenticated" : "Not Authenticated"}</span></div>
+                                            <div className="flex justify-between mb-1"><span>User ID:</span> <span>{user ? user.uid.substring(0, 8) + "..." : "-"}</span></div>
+                                            <div className="flex justify-between"><span>Sync Error:</span> <span className={syncError ? "text-red-600 font-bold" : "text-green-600"}>{syncError ? "Yes" : "No"}</span></div>
+                                        </div>
+                                    </section>
+
+                                    <section>
+                                        <h4 className="text-xs font-bold text-slate-500 mb-2 uppercase flex justify-between">Debug Log <button onClick={() => setLogs([])} className="text-blue-500">Clear</button></h4>
+                                        <div className="bg-black text-green-400 p-2 rounded-lg h-32 overflow-y-auto text-[10px] font-mono log-scroll">
+                                            {logs.length === 0 && <span className="opacity-50">No logs yet...</span>}
+                                            {logs.map((log, i) => <div key={i} className="mb-1 border-b border-gray-800 pb-1">{log}</div>)}
+                                        </div>
+                                    </section>
                                 </div>
                             </div>
                         </div>
