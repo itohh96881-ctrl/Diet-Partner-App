@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Diet Partner App (Local)</title>
+    <title>Diet Partner App (Cloud Sync)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Babel for JSX -->
@@ -34,6 +34,55 @@
 <body class="bg-slate-50">
     <div id="root"></div>
 
+    <!-- Firebase Setup -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+        import { getAuth, signInAnonymously, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { getFirestore } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+
+        // =================================================================
+        // 【重要】ご自身の環境で使う場合は、以下の値を書き換えてください
+        // =================================================================
+        // 1. Firebaseコンソール (https://console.firebase.google.com/) でプロジェクト作成
+        // 2. Authenticationで「匿名ログイン」を有効化
+        // 3. Firestore Databaseを作成（テストモード推奨）
+        // 4. プロジェクト設定 > マイアプリ > ウェブアプリを追加 してconfigを取得
+        // 5. 以下の { } の中身を、取得した内容で書き換えてください
+        const myFirebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT_ID.appspot.com",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+        // =================================================================
+
+        // プレビュー環境では自動提供される設定を使い、それ以外（ローカル等）では上記の設定を使います
+        const firebaseConfig = window.__firebase_config ? JSON.parse(window.__firebase_config) : myFirebaseConfig;
+        
+        // アプリID（Firestoreの保存パスに使われます。変更してもOKです）
+        const appId = window.__app_id || 'diet-partner-app';
+        const initialAuthToken = window.__initial_auth_token;
+
+        let app, auth, db;
+        try {
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+        } catch (e) {
+            console.error("Firebase initialization failed. Config might be missing.", e);
+        }
+
+        // Reactコンポーネントからアクセスできるようにwindowに公開
+        window.db = db;
+        window.auth = auth;
+        window.appId = appId;
+        window.initialAuthToken = initialAuthToken;
+        window.signInWithCustomToken = signInWithCustomToken;
+        window.signInAnonymously = signInAnonymously;
+    </script>
+
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect, useMemo, useRef } from 'react';
         import { createRoot } from 'react-dom/client';
@@ -41,8 +90,12 @@
             Activity, Utensils, Bed, CheckCircle, Scale, Calendar, Trophy, 
             ChevronRight, RefreshCw, AlertCircle, TrendingDown, Moon, 
             Camera, Loader2, Sparkles, Coffee, Sun, Sunset, Flame, Ban, 
-            Undo2, Award, Star, Settings, X, Key, BrainCircuit, ImageIcon, Trash2
+            Undo2, Award, Star, Settings, X, Key, BrainCircuit, ImageIcon, Trash2, Cloud, CloudOff
         } from 'lucide-react';
+
+        // Firebase modules from CDN (for inside React)
+        import { onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+        import { doc, setDoc, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
 
         // ロードマップに基づくベースプラン
         const WEEKLY_PLAN_BASE = {
@@ -97,288 +150,280 @@
 
         // メインコンポーネント
         function DietPartnerApp() {
+            const [user, setUser] = useState(null);
             const [today, setToday] = useState(new Date());
-            
-            // APIキー管理
-            const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || "");
-            const [showSettings, setShowSettings] = useState(false);
-            const [tempApiKey, setTempApiKey] = useState("");
+            const [loading, setLoading] = useState(true);
+            const [syncError, setSyncError] = useState(false);
 
-            // AI生成プランの状態
-            const [aiGeneratedPlan, setAiGeneratedPlan] = useState(() => {
-                const saved = localStorage.getItem('diet_ai_plan');
-                if (saved) {
-                    const parsed = JSON.parse(saved);
-                    // 日付が変わっていれば破棄
-                    if (new Date(parsed.date).toDateString() === new Date().toDateString()) {
-                        return parsed.plan;
-                    }
-                }
-                return null;
-            });
-            const [isPlanLoading, setIsPlanLoading] = useState(false);
-
-            // 履歴データの管理
-            const [history, setHistory] = useState(() => {
-                const saved = localStorage.getItem('diet_history');
-                return saved ? JSON.parse(saved) : [
+            // データステート
+            const [profile, setProfile] = useState({ weight: 84.6, bfp: 20.4, apiKey: "" });
+            const [history, setHistory] = useState([
                 { date: new Date(Date.now() - 86400000 * 2).toISOString(), weight: 85.0, bfp: 20.8 },
                 { date: new Date(Date.now() - 86400000).toISOString(), weight: 84.8, bfp: 20.5 },
                 { date: new Date().toISOString(), weight: 84.6, bfp: 20.4 }
-                ];
+            ]);
+            const [dailyData, setDailyData] = useState({
+                date: new Date().toISOString(),
+                sleepHours: 6,
+                feeling: 'normal',
+                isCheckedIn: false,
+                tasks: { meal: false, workout: false, sleep: false },
+                isFinished: false,
+                dailyFeedback: null,
+                dailyImage: null // 画像はローカルメモリのみ（リロードで消えます）
             });
+            const [mealLogs, setMealLogs] = useState({
+                breakfast: { image: null, result: null, skipped: false },
+                lunch: { image: null, result: null, skipped: false },
+                dinner: { image: null, result: null, skipped: false }
+            });
+            const [aiPlan, setAiPlan] = useState(null);
 
-            const [currentStatus, setCurrentStatus] = useState(() => {
-                const saved = localStorage.getItem('diet_status');
-                return saved ? JSON.parse(saved) : { weight: 84.6, bfp: 20.4 };
-            });
-            
-            const [dailyCheckIn, setDailyCheckIn] = useState(() => {
-                const saved = localStorage.getItem('diet_daily_checkin');
-                if (saved) {
-                    const parsed = JSON.parse(saved);
-                    const savedDate = new Date(parsed.date).toDateString();
-                    const todayDate = new Date().toDateString();
-                    if (savedDate === todayDate) return parsed;
-                }
-                return {
-                    date: new Date().toISOString(),
-                    sleepHours: 6,
-                    feeling: 'normal',
-                    isCheckedIn: false,
-                    tasks: { meal: false, workout: false, sleep: false },
-                    isFinished: false,
-                    dailyFeedback: null,
-                    dailyImage: null
-                };
-            });
-
+            const [showSettings, setShowSettings] = useState(false);
+            const [tempApiKey, setTempApiKey] = useState("");
             const [activeMeal, setActiveMeal] = useState('breakfast');
-            const [mealLogs, setMealLogs] = useState(() => {
-                const saved = localStorage.getItem('diet_meal_logs');
-                if (saved) {
-                    const parsed = JSON.parse(saved);
-                    const savedDate = parsed.date;
-                    const todayDate = new Date().toDateString();
-                    if (savedDate === todayDate) return parsed.logs;
-                }
-                return {
-                    breakfast: { image: null, result: null, skipped: false },
-                    lunch: { image: null, result: null, skipped: false },
-                    dinner: { image: null, result: null, skipped: false }
-                };
-            });
-
             const [analyzing, setAnalyzing] = useState(false);
             const [finishing, setFinishing] = useState(false);
+            const [isPlanLoading, setIsPlanLoading] = useState(false);
             const fileInputRef = useRef(null);
 
-            // AIプランがあればそれを優先、なければベースプランを使用
+            // 今日の日付ID (YYYY-MM-DD)
+            const todayDocId = useMemo(() => {
+                const d = new Date();
+                return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            }, [today]);
+
+            // プラン選択ロジック
             const plan = useMemo(() => {
-                if (aiGeneratedPlan) return aiGeneratedPlan;
-                const base = WEEKLY_PLAN_BASE[today.getDay()];
-                return base;
-            }, [today, aiGeneratedPlan]);
+                if (aiPlan) return aiPlan;
+                return WEEKLY_PLAN_BASE[today.getDay()];
+            }, [today, aiPlan]);
 
-            // LocalStorageへの保存
-            useEffect(() => { localStorage.setItem('diet_status', JSON.stringify(currentStatus)); }, [currentStatus]);
-            useEffect(() => { localStorage.setItem('diet_history', JSON.stringify(history)); }, [history]);
-            
-            useEffect(() => { 
-                try {
-                    localStorage.setItem('diet_daily_checkin', JSON.stringify(dailyCheckIn)); 
-                } catch(e) {
-                    console.warn("Storage quota exceeded, removing image to save text data.", e);
-                    // 画像を除外して保存を試みる
-                    const safeCheckIn = {...dailyCheckIn, dailyImage: null};
-                    localStorage.setItem('diet_daily_checkin', JSON.stringify(safeCheckIn)); 
-                }
-            }, [dailyCheckIn]);
-
-            useEffect(() => { 
-                try {
-                    localStorage.setItem('diet_meal_logs', JSON.stringify({
-                        date: new Date().toDateString(),
-                        logs: mealLogs
-                    })); 
-                } catch(e) {
-                    console.warn("Storage quota exceeded for meal logs", e);
-                }
-            }, [mealLogs]);
-
+            // 認証と初期化
             useEffect(() => {
-                if (aiGeneratedPlan) {
-                    localStorage.setItem('diet_ai_plan', JSON.stringify({
-                        date: new Date().toISOString(),
-                        plan: aiGeneratedPlan
-                    }));
-                }
-            }, [aiGeneratedPlan]);
+                const initAuth = async () => {
+                    const { auth, initialAuthToken, signInWithCustomToken, signInAnonymously } = window;
+                    if (!auth) {
+                        setSyncError(true);
+                        setLoading(false);
+                        return;
+                    }
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    } catch (error) {
+                        console.error("Auth failed", error);
+                        setSyncError(true);
+                        setLoading(false);
+                    }
+                };
+                initAuth();
 
-            // APIキー保存処理
+                if (window.auth) {
+                    const unsubscribe = onAuthStateChanged(window.auth, (currentUser) => {
+                        setUser(currentUser);
+                        if (!currentUser) setLoading(false);
+                    });
+                    return () => unsubscribe();
+                } else {
+                    setLoading(false);
+                }
+            }, []);
+
+            // Firestore 同期
+            useEffect(() => {
+                if (!user) return;
+                const { db, appId } = window;
+                const userDocRef = (col) => doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', col);
+
+                // Profile
+                const unsubProfile = onSnapshot(userDocRef('profile'), (docSnap) => {
+                    if (docSnap.exists()) {
+                        setProfile(prev => ({ ...prev, ...docSnap.data() }));
+                    }
+                }, (err) => { console.error(err); setSyncError(true); });
+
+                // History
+                const unsubHistory = onSnapshot(userDocRef('history'), (docSnap) => {
+                    if (docSnap.exists()) {
+                        setHistory(docSnap.data().records || []);
+                    }
+                });
+
+                // Daily Data
+                const unsubDaily = onSnapshot(userDocRef(todayDocId), (docSnap) => {
+                    setLoading(false);
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        setDailyData(prev => ({ ...prev, ...data.checkIn })); // 画像はDBにないのでnullになる
+                        if (data.mealLogs) {
+                            setMealLogs(prev => {
+                                const newLogs = {};
+                                Object.keys(data.mealLogs).forEach(key => {
+                                    // ローカルメモリに画像がある場合は維持を試みる（リロードすると消える）
+                                    newLogs[key] = { ...data.mealLogs[key], image: prev[key]?.image || null };
+                                });
+                                return newLogs;
+                            });
+                        }
+                        if (data.aiPlan) setAiPlan(data.aiPlan);
+                    }
+                });
+
+                return () => { unsubProfile(); unsubHistory(); unsubDaily(); };
+            }, [user, todayDocId]);
+
+            // 保存処理ラッパー
+            const saveDailyData = async (newCheckIn, newMealLogs, newAiPlan) => {
+                if (!user) return;
+                const { db, appId } = window;
+                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', todayDocId);
+                
+                // 画像データ(Base64)は容量制限のためDB保存から除外
+                const cleanCheckIn = { ...newCheckIn, dailyImage: null };
+                const cleanMealLogs = {};
+                Object.keys(newMealLogs || mealLogs).forEach(key => {
+                    const log = newMealLogs?.[key] || mealLogs[key];
+                    cleanMealLogs[key] = { ...log, image: null };
+                });
+
+                await setDoc(docRef, {
+                    checkIn: cleanCheckIn,
+                    mealLogs: cleanMealLogs,
+                    aiPlan: newAiPlan || aiPlan,
+                    updatedAt: new Date().toISOString()
+                }, { merge: true });
+            };
+
+            const saveProfile = async (newProfile) => {
+                if (!user) return;
+                const { db, appId } = window;
+                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', 'profile');
+                await setDoc(docRef, newProfile, { merge: true });
+            };
+
+            const saveHistory = async (newHistory) => {
+                if (!user) return;
+                const { db, appId } = window;
+                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'diet_data', 'history');
+                await setDoc(docRef, { records: newHistory }, { merge: true });
+            };
+
+            // ハンドラー
             const handleSaveApiKey = () => {
-                localStorage.setItem('gemini_api_key', tempApiKey);
-                setApiKey(tempApiKey);
+                const newProfile = { ...profile, apiKey: tempApiKey };
+                setProfile(newProfile);
+                saveProfile(newProfile);
                 setShowSettings(false);
-                alert("APIキーを保存しました！");
+                alert("APIキーをクラウドに保存しました！");
             };
 
             const openSettings = () => {
-                setTempApiKey(apiKey);
+                setTempApiKey(profile.apiKey || "");
                 setShowSettings(true);
             };
 
             const handleStatusChange = (e) => {
                 const { name, value } = e.target;
-                setCurrentStatus(prev => ({ ...prev, [name]: parseFloat(value) }));
+                setProfile(prev => ({ ...prev, [name]: parseFloat(value) }));
             };
 
-            // 今日の最適プランを生成する関数
+            // AIプラン生成
             const generateDailyPlan = async (status, sleep) => {
-                if (!apiKey) return; // キーがなければベースプランのまま
+                if (!profile.apiKey) return;
                 setIsPlanLoading(true);
-
                 const dayOfWeek = ['日', '月', '火', '水', '木', '金', '土'][today.getDay()];
-                const recentHistory = history.slice(-3).map(h => 
-                    `- ${new Date(h.date).toLocaleDateString()}: ${h.weight}kg`
-                ).join('\n');
-
-                const prompt = `
-                    あなたはプロのダイエットインストラクターです。
-                    クライアントの今日のコンディションと過去の履歴に基づいて、今日1日の最適なスケジュール（運動・食事・目標カロリー）を動的に作成してください。
-                    目標: 65kg / 15% (現在: ${status.weight}kg / ${status.bfp}%)
-                    曜日: ${dayOfWeek}, 睡眠: ${sleep}時間
-                    履歴: ${recentHistory}
-                    指示: 睡眠6h未満はリカバリー優先。体重増減に応じたアドバイス。
-                    JSONフォーマット:
-                    { "day": "${dayOfWeek}曜日", "title": "テーマ", "type": "rest/home/gym/cardio/adjustment", "targetCalories": 1800, "workout": "メイン指示", "workoutDetail": "詳細", "sleepAdvice": "睡眠", "dietDetail": { "breakfast": "", "lunch": "", "dinner": "", "focus": "" }, "color": "bg-indigo-100 border-indigo-500 text-indigo-800" }
-                `;
-
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-
+                const recentHistory = history.slice(-3).map(h => `- ${new Date(h.date).toLocaleDateString()}: ${h.weight}kg`).join('\n');
+                const prompt = `ダイエットインストラクターとして、今日の最適プランをJSONで作成。目標65kg/15%。現在${status.weight}kg。${dayOfWeek}, 睡眠${sleep}h。履歴:${recentHistory}。睡眠不足時は休息優先。JSON:{ "day": "${dayOfWeek}", "title": "テーマ", "type": "rest/home/gym/cardio/adjustment", "targetCalories": 1800, "workout": "指示", "workoutDetail": "詳細", "sleepAdvice": "睡眠", "dietDetail": {"breakfast":"", "lunch":"", "dinner":"", "focus":""}, "color": "bg-indigo-100 border-indigo-500 text-indigo-800" }`;
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${profile.apiKey}`;
                 try {
-                    const response = await fetch(url, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-                    });
-                    const data = await response.json();
-                    if (data.candidates && data.candidates[0].content) {
-                        const text = data.candidates[0].content.parts[0].text.replace(/```json|```/g, '').trim();
-                        const generated = JSON.parse(text);
-                        setAiGeneratedPlan(generated);
+                    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) });
+                    const data = await res.json();
+                    if(data.candidates) {
+                        const plan = JSON.parse(data.candidates[0].content.parts[0].text.replace(/```json|```/g, '').trim());
+                        setAiPlan(plan);
+                        saveDailyData(dailyData, mealLogs, plan);
                     }
-                } catch (error) {
-                    console.error('Plan generation failed:', error);
-                } finally {
-                    setIsPlanLoading(false);
-                }
+                } catch(e) { console.error(e); }
+                setIsPlanLoading(false);
             };
 
             const handleCheckInSubmit = async (e) => {
                 e.preventDefault();
-                const todayStr = new Date().toDateString();
+                const newEntry = { date: new Date().toISOString(), weight: profile.weight, bfp: profile.bfp };
                 const newHistory = [...history];
+                const todayStr = new Date().toDateString();
                 const existingIndex = newHistory.findIndex(h => new Date(h.date).toDateString() === todayStr);
-                
-                const newEntry = {
-                    date: new Date().toISOString(),
-                    weight: currentStatus.weight,
-                    bfp: currentStatus.bfp
-                };
-
-                if (existingIndex >= 0) {
-                    newHistory[existingIndex] = newEntry;
-                } else {
-                    newHistory.push(newEntry);
-                }
+                if (existingIndex >= 0) newHistory[existingIndex] = newEntry; else newHistory.push(newEntry);
                 
                 setHistory(newHistory);
-                setDailyCheckIn(prev => ({ 
-                    ...prev, 
-                    isCheckedIn: true, 
-                    date: new Date().toISOString(),
-                    isFinished: false,
-                    dailyFeedback: null,
-                    dailyImage: null
-                }));
+                saveHistory(newHistory);
+                saveProfile(profile);
 
-                if (apiKey) {
-                    await generateDailyPlan(currentStatus, dailyCheckIn.sleepHours);
-                }
+                const newCheckIn = { ...dailyData, isCheckedIn: true, date: new Date().toISOString(), isFinished: false, dailyFeedback: null, dailyImage: null };
+                setDailyData(newCheckIn);
+                saveDailyData(newCheckIn, mealLogs, aiPlan);
+
+                if (profile.apiKey) await generateDailyPlan(profile, dailyData.sleepHours);
             };
 
             const toggleTask = (taskName) => {
-                if (dailyCheckIn.isFinished) return;
-                setDailyCheckIn(prev => ({
-                ...prev,
-                tasks: { ...prev.tasks, [taskName]: !prev.tasks[taskName] }
-                }));
+                if (dailyData.isFinished) return;
+                const newTasks = { ...dailyData.tasks, [taskName]: !dailyData.tasks[taskName] };
+                const newCheckIn = { ...dailyData, tasks: newTasks };
+                setDailyData(newCheckIn);
+                saveDailyData(newCheckIn, mealLogs, aiPlan);
             };
 
-            const handleSkipMeal = (mealType) => {
-                if (dailyCheckIn.isFinished) return;
-                if (window.confirm('欠食として記録しますか？')) {
-                setMealLogs(prev => ({
-                    ...prev,
-                    [mealType]: { image: null, result: null, skipped: true }
-                }));
-                }
-            };
-
-            const handleResetMeal = (mealType) => {
-                if (dailyCheckIn.isFinished) return;
-                setMealLogs(prev => ({
-                    ...prev,
-                    [mealType]: { image: null, result: null, skipped: false }
-                }));
-            };
-
+            // 食事・画像関連
             const handleImageUpload = (event) => {
-                if (dailyCheckIn.isFinished) return;
+                if (dailyData.isFinished) return;
                 const file = event.target.files[0];
                 if (file) {
-                const reader = new FileReader();
-                reader.onloadend = () => {
-                    analyzeImage(reader.result, activeMeal);
-                };
-                reader.readAsDataURL(file);
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        // ローカル表示用に即時反映
+                        setMealLogs(prev => ({ ...prev, [activeMeal]: { ...prev[activeMeal], image: reader.result } }));
+                        analyzeImage(reader.result, activeMeal);
+                    };
+                    reader.readAsDataURL(file);
                 }
                 event.target.value = '';
             };
 
             const analyzeImage = async (base64Image, mealType) => {
-                if (!apiKey) {
-                    alert("APIキーが設定されていません。");
-                    openSettings();
-                    return;
-                }
+                if (!profile.apiKey) { alert("APIキーが必要です"); openSettings(); return; }
                 setAnalyzing(true);
                 const base64Data = base64Image.split(',')[1];
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-                const payload = {
-                    contents: [{ parts: [
-                        { text: "料理画像を分析し、料理名、推定カロリー(kcal)、PFC(g)、アドバイスをJSON(name, calories, protein, fat, carbs, advice)で出力。" },
-                        { inlineData: { mimeType: "image/jpeg", data: base64Data } }
-                    ] }],
-                    generationConfig: { responseMimeType: "application/json" }
-                };
-
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${profile.apiKey}`;
+                const payload = { contents: [{ parts: [{ text: "料理分析: カロリー(kcal), PFC(g), アドバイスをJSON(name, calories, protein, fat, carbs, advice)で。" }, { inlineData: { mimeType: "image/jpeg", data: base64Data } }] }], generationConfig: { responseMimeType: "application/json" } };
                 try {
-                    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                    const data = await response.json();
-                    if (data.candidates) {
+                    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    const data = await res.json();
+                    if(data.candidates) {
                         const result = JSON.parse(data.candidates[0].content.parts[0].text);
-                        setMealLogs(prev => ({
-                            ...prev,
-                            [mealType]: { image: base64Image, result: result, skipped: false }
-                        }));
+                        const newMealLogs = { ...mealLogs, [mealType]: { image: base64Image, result: result, skipped: false } };
+                        setMealLogs(newMealLogs);
+                        saveDailyData(dailyData, newMealLogs, aiPlan);
                     }
-                } catch (error) {
-                    alert('解析失敗: APIキーなどを確認してください');
-                } finally {
-                    setAnalyzing(false);
+                } catch(e) { alert("解析エラー"); }
+                setAnalyzing(false);
+            };
+
+            const handleSkipMeal = (type) => { 
+                if(window.confirm('欠食にしますか？')) {
+                    const newLogs = { ...mealLogs, [type]: { image: null, result: null, skipped: true } };
+                    setMealLogs(newLogs);
+                    saveDailyData(dailyData, newLogs, aiPlan);
                 }
+            };
+            const handleResetMeal = (type) => {
+                const newLogs = { ...mealLogs, [type]: { image: null, result: null, skipped: false } };
+                setMealLogs(newLogs);
+                saveDailyData(dailyData, newLogs, aiPlan);
             };
 
             const totalCalories = useMemo(() => Object.values(mealLogs).reduce((sum, meal) => sum + (meal.result?.calories || 0), 0), [mealLogs]);
@@ -386,141 +431,101 @@
 
             const handleFinishDay = async () => {
                 if (!window.confirm("1日の記録を確定しますか？")) return;
-                if (!apiKey) {
-                    alert("APIキーがないため記録のみ保存します。");
-                    setDailyCheckIn(prev => ({ ...prev, isFinished: true, dailyFeedback: "記録完了。APIキーを設定するとAIコメントがもらえます。" }));
-                    return;
-                }
-
+                if (!profile.apiKey) { alert("APIキーがないため記録のみ保存します。"); saveDailyData({ ...dailyData, isFinished: true, dailyFeedback: "記録完了" }, mealLogs, aiPlan); return; }
+                
                 setFinishing(true);
-                const textPrompt = `ダイエットコーチとして、今日の成果に100文字以内のフィードバックを。目標65kg, 現在${currentStatus.weight}kg, 摂取${totalCalories}/${plan.targetCalories}kcal, タスク達成:食${dailyCheckIn.tasks.meal?1:0}/運${dailyCheckIn.tasks.workout?1:0}/睡${dailyCheckIn.tasks.sleep?1:0}`;
-                const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+                const textPrompt = `ダイエットコーチとしてフィードバック(100文字)。目標65kg, 現在${profile.weight}kg, 摂取${totalCalories}/${plan.targetCalories}kcal, 達成:食${dailyData.tasks.meal?1:0}/運${dailyData.tasks.workout?1:0}/睡${dailyData.tasks.sleep?1:0}`;
+                const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${profile.apiKey}`;
                 // Imagen 4 (Nano Banana Pro)
-                const imageUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${apiKey}`;
-
-                let generatedFeedback = "お疲れ様！";
-                let generatedImage = null;
+                const imageUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${profile.apiKey}`;
+                
+                let feedback = "お疲れ様！";
+                let image = null;
                 let errorMessage = "";
-
+                
                 try {
-                    // Text
-                    const textRes = await fetch(textUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: textPrompt }] }] }) });
-                    const textData = await textRes.json();
-                    if(textData.candidates) generatedFeedback = textData.candidates[0].content.parts[0].text;
+                    // Text Gen
+                    const tRes = await fetch(textUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: textPrompt }] }] }) });
+                    const tData = await tRes.json();
+                    if(tData.candidates) feedback = tData.candidates[0].content.parts[0].text;
 
-                    // Image
-                    const feelingPrompt = dailyCheckIn.tasks.workout ? "energetic, powerful" : "relaxing, peaceful";
-                    const imagePrompt = `Anime style fitness motivation poster, Theme: ${feelingPrompt}, A fit person giving a thumbs up, bright lighting.`;
-                    const imgRes = await fetch(imageUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instances: [{ prompt: imagePrompt }], parameters: { sampleCount: 1 } }) });
-                    const imgData = await imgRes.json();
+                    // Image Gen (Imagen 4)
+                    const feeling = dailyData.tasks.workout ? "energetic" : "relaxing";
+                    const iRes = await fetch(imageUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ instances: [{ prompt: `Anime style fitness motivation poster, Theme: ${feeling}, fit person thumbs up` }], parameters: { sampleCount: 1 } }) });
+                    const iData = await iRes.json();
                     
-                    if (imgData.error) {
-                        console.error("Image Gen API Error:", imgData.error);
-                        errorMessage = `画像生成エラー: ${imgData.error.message}`;
-                    } else if (imgData.predictions?.[0]?.bytesBase64Encoded) {
-                        generatedImage = `data:image/png;base64,${imgData.predictions[0].bytesBase64Encoded}`;
+                    if (iData.error) {
+                        errorMessage = `画像生成エラー: ${iData.error.message}`;
+                    } else if (iData.predictions?.[0]?.bytesBase64Encoded) {
+                        image = `data:image/png;base64,${iData.predictions[0].bytesBase64Encoded}`;
                     } else {
                         errorMessage = "画像生成失敗";
                     }
+                } catch(e) { console.error(e); errorMessage = "通信エラー"; }
 
-                } catch (e) { 
-                    console.error(e); 
-                    errorMessage = "通信エラー"; 
-                }
+                if (errorMessage) feedback += `\n(※${errorMessage})`;
 
-                if (errorMessage) generatedFeedback += `\n(※${errorMessage})`;
-
-                setDailyCheckIn(prev => ({
-                    ...prev,
-                    isFinished: true,
-                    dailyFeedback: generatedFeedback,
-                    dailyImage: generatedImage
-                }));
+                const newCheckIn = { ...dailyData, isFinished: true, dailyFeedback: feedback, dailyImage: image };
+                setDailyData(newCheckIn);
+                saveDailyData(newCheckIn, mealLogs, aiPlan);
                 setFinishing(false);
                 setTimeout(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }), 100);
             };
 
             const handleDailyReset = () => {
-                if(window.confirm('今日の記録をリセットしますか？\n※体重履歴やAPIキーは消えません。')) {
-                    localStorage.removeItem('diet_daily_checkin');
-                    localStorage.removeItem('diet_meal_logs');
-                    localStorage.removeItem('diet_ai_plan');
-                    window.location.reload();
+                if(window.confirm('今日の記録をリセットしますか？')) {
+                    const resetCheckIn = { date: new Date().toISOString(), sleepHours: 6, feeling: 'normal', isCheckedIn: false, tasks: { meal: false, workout: false, sleep: false }, isFinished: false, dailyFeedback: null, dailyImage: null };
+                    const resetLogs = { breakfast: { image: null, result: null, skipped: false }, lunch: { image: null, result: null, skipped: false }, dinner: { image: null, result: null, skipped: false } };
+                    setDailyData(resetCheckIn);
+                    setMealLogs(resetLogs);
+                    setAiPlan(null);
+                    saveDailyData(resetCheckIn, resetLogs, null);
                 }
             };
 
-            const isSleepDeprived = dailyCheckIn.sleepHours < 6.5;
+            if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-500"><Loader2 className="w-10 h-10 animate-spin" /></div>;
 
             return (
                 <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-24">
-                    {/* Header */}
                     <header className="bg-slate-900 text-white p-6 rounded-b-3xl shadow-lg relative overflow-hidden">
                         <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500 rounded-full blur-3xl opacity-20 -mr-10 -mt-10"></div>
                         <div className="flex justify-between items-center mb-6 relative z-10">
-                            <div>
-                                <h1 className="text-xl font-bold flex items-center gap-2">
-                                    <Activity className="w-5 h-5 text-emerald-400" /> Diet Partner
-                                </h1>
-                                <p className="text-slate-400 text-xs mt-1">Goal: 65kg / 15%</p>
-                            </div>
-                            <div className="flex items-center gap-3">
-                                <div className="text-right"><p className="text-xs text-slate-400">{today.toLocaleDateString()}</p><p className="font-bold text-lg">{plan.day}</p></div>
-                                <button onClick={openSettings} className="bg-white/10 hover:bg-white/20 p-2 rounded-full"><Settings className="w-5 h-5 text-slate-200" /></button>
-                            </div>
+                            <div><h1 className="text-xl font-bold flex items-center gap-2"><Activity className="w-5 h-5 text-emerald-400" /> Diet Partner {syncError ? <CloudOff className="w-4 h-4 text-red-400" /> : <Cloud className="w-4 h-4 text-emerald-400" />}</h1><p className="text-slate-400 text-xs mt-1">Goal: 65kg / 15%</p></div>
+                            <div className="flex items-center gap-3"><div className="text-right"><p className="text-xs text-slate-400">{today.toLocaleDateString()}</p><p className="font-bold text-lg">{plan.day}</p></div><button onClick={openSettings} className="bg-white/10 hover:bg-white/20 p-2 rounded-full"><Settings className="w-5 h-5 text-slate-200" /></button></div>
                         </div>
-                        {dailyCheckIn.isCheckedIn && (
+                        {dailyData.isCheckedIn && (
                             <div className="space-y-4 relative z-10">
                                 <div className="flex justify-between items-center">
-                                    <div className="bg-slate-800/50 p-3 rounded-lg w-[48%] backdrop-blur-sm">
-                                        <p className="text-xs text-slate-400">体重</p>
-                                        <div className="flex items-baseline gap-1"><span className="text-2xl font-bold">{currentStatus.weight}</span><span className="text-xs">kg</span></div>
-                                        <p className="text-xs text-emerald-400 flex items-center gap-1"><TrendingDown className="w-3 h-3" />あと {(currentStatus.weight - INITIAL_GOAL.weight).toFixed(1)}kg</p>
-                                    </div>
-                                    <div className="bg-slate-800/50 p-3 rounded-lg w-[48%] backdrop-blur-sm">
-                                        <p className="text-xs text-slate-400">体脂肪率</p>
-                                        <div className="flex items-baseline gap-1"><span className="text-2xl font-bold">{currentStatus.bfp}</span><span className="text-xs">%</span></div>
-                                        <p className="text-xs text-emerald-400 flex items-center gap-1"><TrendingDown className="w-3 h-3" />あと {(currentStatus.bfp - INITIAL_GOAL.bfp).toFixed(1)}%</p>
-                                    </div>
+                                    <div className="bg-slate-800/50 p-3 rounded-lg w-[48%] backdrop-blur-sm"><p className="text-xs text-slate-400">体重</p><div className="flex items-baseline gap-1"><span className="text-2xl font-bold">{profile.weight}</span><span className="text-xs">kg</span></div><p className="text-xs text-emerald-400 flex items-center gap-1"><TrendingDown className="w-3 h-3" />あと {(profile.weight - INITIAL_GOAL.weight).toFixed(1)}kg</p></div>
+                                    <div className="bg-slate-800/50 p-3 rounded-lg w-[48%] backdrop-blur-sm"><p className="text-xs text-slate-400">体脂肪率</p><div className="flex items-baseline gap-1"><span className="text-2xl font-bold">{profile.bfp}</span><span className="text-xs">%</span></div><p className="text-xs text-emerald-400 flex items-center gap-1"><TrendingDown className="w-3 h-3" />あと {(profile.bfp - INITIAL_GOAL.bfp).toFixed(1)}%</p></div>
                                 </div>
-                                <div className="bg-white/5 p-3 rounded-xl border border-white/10">
-                                    <SimpleChart data={history.slice(-14)} dataKey="weight" color="#34d399" label="Weight" unit="kg" domain={[INITIAL_GOAL.weight, INITIAL_GOAL.startWeight]} />
-                                </div>
+                                <div className="bg-white/5 p-3 rounded-xl border border-white/10"><SimpleChart data={history.slice(-14)} dataKey="weight" color="#34d399" label="Weight" unit="kg" domain={[INITIAL_GOAL.weight, INITIAL_GOAL.startWeight]} /></div>
                             </div>
                         )}
                     </header>
 
                     <main className="max-w-md mx-auto px-4 -mt-4 relative z-20">
-                        {!dailyCheckIn.isCheckedIn ? (
+                        {!dailyData.isCheckedIn ? (
                             <div className="bg-white rounded-xl shadow-xl p-6 mb-6 border border-slate-100">
                                 <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700"><Scale className="w-5 h-5 text-blue-500" /> モーニング・チェックイン</h2>
                                 <form onSubmit={handleCheckInSubmit} className="space-y-4">
                                     <div className="grid grid-cols-2 gap-4">
-                                        <div><label className="block text-xs font-bold text-slate-500 mb-1">体重 (kg)</label><input type="number" step="0.1" name="weight" value={currentStatus.weight} onChange={handleStatusChange} className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none" required /></div>
-                                        <div><label className="block text-xs font-bold text-slate-500 mb-1">体脂肪率 (%)</label><input type="number" step="0.1" name="bfp" value={currentStatus.bfp} onChange={handleStatusChange} className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none" required /></div>
+                                        <div><label className="block text-xs font-bold text-slate-500 mb-1">体重 (kg)</label><input type="number" step="0.1" name="weight" value={profile.weight} onChange={handleStatusChange} className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none" required /></div>
+                                        <div><label className="block text-xs font-bold text-slate-500 mb-1">体脂肪率 (%)</label><input type="number" step="0.1" name="bfp" value={profile.bfp} onChange={handleStatusChange} className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none" required /></div>
                                     </div>
-                                    <div><label className="block text-xs font-bold text-slate-500 mb-1">昨晩の睡眠 (時間)</label><input type="number" step="0.5" value={dailyCheckIn.sleepHours} onChange={(e) => setDailyCheckIn({...dailyCheckIn, sleepHours: parseFloat(e.target.value)})} className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none" required /></div>
+                                    <div><label className="block text-xs font-bold text-slate-500 mb-1">昨晩の睡眠 (時間)</label><input type="number" step="0.5" value={dailyData.sleepHours} onChange={(e) => setDailyData({...dailyData, sleepHours: parseFloat(e.target.value)})} className="w-full p-3 border border-slate-200 rounded-lg text-xl font-bold text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none" required /></div>
                                     <button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow-md flex items-center justify-center gap-2">記録してスタート <ChevronRight className="w-5 h-5" /></button>
                                 </form>
                             </div>
                         ) : (
                             <div className="space-y-6 pt-4">
-                                {/* Sleep Alert */}
-                                {dailyCheckIn.sleepHours < 6.5 && (
-                                    <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-lg shadow-sm flex items-start gap-3">
-                                        <AlertCircle className="w-6 h-6 text-amber-500 flex-shrink-0 mt-1" />
-                                        <div><h3 className="font-bold text-amber-800 text-sm">睡眠不足アラート</h3><p className="text-xs text-amber-700 mt-1">睡眠{dailyCheckIn.sleepHours}時間。カフェインは14時まで、仮眠推奨。</p></div>
-                                    </div>
-                                )}
+                                {dailyData.sleepHours < 6.5 && <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-lg shadow-sm flex items-start gap-3"><AlertCircle className="w-6 h-6 text-amber-500 flex-shrink-0 mt-1" /><div><h3 className="font-bold text-amber-800 text-sm">睡眠不足アラート</h3><p className="text-xs text-amber-700 mt-1">睡眠{dailyData.sleepHours}時間。カフェインは14時まで、仮眠推奨。</p></div></div>}
 
-                                {/* Daily Plan */}
                                 <section className={`rounded-xl shadow-lg border-2 overflow-hidden ${plan.color.replace('text-', 'border-').replace('bg-', 'bg-white ')}`}>
-                                    <div className={`p-4 ${plan.color} flex justify-between items-center`}>
-                                        <h2 className="font-bold text-lg flex items-center gap-2"><Calendar className="w-5 h-5" /> {isPlanLoading ? "最適化中..." : "今日のミッション"}</h2>
-                                        <span className="text-xs font-bold px-2 py-1 bg-white/60 rounded text-slate-800 uppercase tracking-wider">{plan.type}</span>
-                                    </div>
+                                    <div className={`p-4 ${plan.color} flex justify-between items-center`}><h2 className="font-bold text-lg flex items-center gap-2"><Calendar className="w-5 h-5" /> {isPlanLoading ? "最適化中..." : "今日のミッション"}</h2><span className="text-xs font-bold px-2 py-1 bg-white/60 rounded text-slate-800 uppercase tracking-wider">{plan.type}</span></div>
                                     <div className="p-5 bg-white relative">
                                         {isPlanLoading && <div className="absolute inset-0 bg-white/90 z-10 flex flex-col items-center justify-center text-slate-500"><Loader2 className="w-10 h-10 animate-spin text-blue-500 mb-2" /><p className="text-sm font-bold animate-pulse">AIがプラン生成中...</p></div>}
-                                        <h3 className="text-2xl font-bold text-slate-800 mb-3 flex items-center gap-2">{plan.title} {aiGeneratedPlan && <Sparkles className="w-5 h-5 text-yellow-500" />}</h3>
+                                        <h3 className="text-2xl font-bold text-slate-800 mb-3 flex items-center gap-2">{plan.title} {aiPlan && <Sparkles className="w-5 h-5 text-yellow-500" />}</h3>
                                         <div className="space-y-4">
                                             <div className="bg-slate-50 p-4 rounded-lg border border-slate-100"><div className="flex items-center gap-2 mb-2"><Activity className="w-4 h-4 text-blue-500" /><p className="text-sm font-bold text-slate-700">運動指示</p></div><p className="text-slate-700 font-bold mb-1">{plan.workout}</p><p className="text-xs text-slate-500 border-t border-slate-200 pt-2 mt-2">{plan.workoutDetail}</p></div>
                                             <div className="bg-slate-50 p-4 rounded-lg border border-slate-100">
@@ -532,114 +537,52 @@
                                     </div>
                                 </section>
 
-                                {/* Meal Logs & AI Analysis */}
-                                <section className={`bg-gradient-to-r from-emerald-500 to-teal-600 rounded-xl shadow-lg p-5 text-white transition-opacity ${dailyCheckIn.isFinished ? 'opacity-75 pointer-events-none grayscale-[0.5]' : ''}`}>
+                                <section className={`bg-gradient-to-r from-emerald-500 to-teal-600 rounded-xl shadow-lg p-5 text-white transition-opacity ${dailyData.isFinished ? 'opacity-75 pointer-events-none grayscale-[0.5]' : ''}`}>
                                     <div className="flex justify-between items-center mb-4">
-                                        <div>
-                                            <h3 className="font-bold flex items-center gap-2"><Camera className="w-5 h-5" /> 食事記録 & AI分析</h3>
-                                            <div className="flex items-baseline gap-2 mt-1"><p className="text-xs text-emerald-100 opacity-90">Total: <span className="text-lg font-bold">{totalCalories}</span> / {plan.targetCalories} kcal</p><span className={`text-xs font-bold px-1.5 rounded ${totalCalories > plan.targetCalories ? 'bg-red-500' : 'bg-emerald-700'}`}>{caloriesProgress.toFixed(0)}%</span></div>
-                                            <div className="w-full bg-black/20 h-1.5 rounded-full mt-1 max-w-[200px]"><div className={`h-full rounded-full transition-all duration-500 ${totalCalories > plan.targetCalories ? 'bg-red-400' : 'bg-white'}`} style={{ width: `${Math.min(100, (totalCalories / plan.targetCalories) * 100)}%` }}></div></div>
-                                        </div>
+                                        <div><h3 className="font-bold flex items-center gap-2"><Camera className="w-5 h-5" /> 食事記録 & AI分析</h3><div className="flex items-baseline gap-2 mt-1"><p className="text-xs text-emerald-100 opacity-90">Total: <span className="text-lg font-bold">{totalCalories}</span> / {plan.targetCalories} kcal</p><span className={`text-xs font-bold px-1.5 rounded ${totalCalories > plan.targetCalories ? 'bg-red-500' : 'bg-emerald-700'}`}>{caloriesProgress.toFixed(0)}%</span></div><div className="w-full bg-black/20 h-1.5 rounded-full mt-1 max-w-[200px]"><div className={`h-full rounded-full transition-all duration-500 ${totalCalories > plan.targetCalories ? 'bg-red-400' : 'bg-white'}`} style={{ width: `${Math.min(100, (totalCalories / plan.targetCalories) * 100)}%` }}></div></div></div>
                                         <span className="text-xs bg-white/20 px-2 py-1 rounded text-white font-bold">Imagen 4</span>
                                     </div>
-                                    <div className="flex p-1 bg-black/20 rounded-lg mb-4">
-                                        {[{ id: 'breakfast', icon: Coffee, label: '朝' }, { id: 'lunch', icon: Sun, label: '昼' }, { id: 'dinner', icon: Sunset, label: '夜' }].map((meal) => (
-                                            <button key={meal.id} onClick={() => setActiveMeal(meal.id)} className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-md text-sm font-bold transition-all ${activeMeal === meal.id ? 'bg-white text-teal-700 shadow-sm' : 'text-white/60 hover:bg-white/10'}`}>
-                                                <meal.icon className="w-3 h-3" /> {meal.label} {mealLogs[meal.id].result && <span className="ml-1 w-2 h-2 rounded-full bg-emerald-400"></span>}{mealLogs[meal.id].skipped && <span className="ml-1 w-2 h-2 rounded-full bg-slate-400"></span>}
-                                            </button>
-                                        ))}
-                                    </div>
+                                    <div className="flex p-1 bg-black/20 rounded-lg mb-4">{[{ id: 'breakfast', icon: Coffee, label: '朝' }, { id: 'lunch', icon: Sun, label: '昼' }, { id: 'dinner', icon: Sunset, label: '夜' }].map((meal) => (<button key={meal.id} onClick={() => setActiveMeal(meal.id)} className={`flex-1 flex items-center justify-center gap-1 py-2 rounded-md text-sm font-bold transition-all ${activeMeal === meal.id ? 'bg-white text-teal-700 shadow-sm' : 'text-white/60 hover:bg-white/10'}`}><meal.icon className="w-3 h-3" /> {meal.label} {mealLogs[meal.id].result && <span className="ml-1 w-2 h-2 rounded-full bg-emerald-400"></span>}{mealLogs[meal.id].skipped && <span className="ml-1 w-2 h-2 rounded-full bg-slate-400"></span>}</button>))}</div>
                                     <div className="animate-in fade-in slide-in-from-right-2 duration-300" key={activeMeal}>
-                                        {mealLogs[activeMeal].skipped ? (
-                                            <div className="bg-black/20 rounded-lg p-6 flex flex-col items-center justify-center text-center"><Ban className="w-10 h-10 text-white/50 mb-2" /><p className="font-bold text-white">欠食 (Skipped)</p><button onClick={() => handleResetMeal(activeMeal)} className="mt-2 bg-white/20 text-xs px-4 py-2 rounded-full flex items-center gap-1"><Undo2 className="w-3 h-3" /> 取消</button></div>
-                                        ) : !mealLogs[activeMeal].image ? (
-                                            <div className="space-y-3">
-                                                <button onClick={() => fileInputRef.current.click()} className="w-full bg-white/10 hover:bg-white/20 border-2 border-dashed border-white/30 rounded-lg p-6 flex flex-col items-center justify-center"><Camera className="w-8 h-8 mb-2 text-white/80" /><span className="text-sm font-bold">写真を撮る</span><input type="file" ref={fileInputRef} accept="image/*" className="hidden" onChange={handleImageUpload} /></button>
-                                                <button onClick={() => handleSkipMeal(activeMeal)} className="w-full text-white/60 text-xs py-2 flex items-center justify-center gap-1"><Ban className="w-3 h-3" /> 欠食記録</button>
-                                            </div>
-                                        ) : (
-                                            <div className="space-y-4">
-                                                <div className="relative rounded-lg overflow-hidden h-40 bg-black/20 flex items-center justify-center">
-                                                    <img src={mealLogs[activeMeal].image} alt="Food" className="h-full w-full object-cover opacity-90" />
-                                                    {analyzing ? <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-white mb-2" /><span className="text-sm font-bold">AI分析中...</span></div> : 
-                                                    <button onClick={() => handleResetMeal(activeMeal)} className="absolute top-2 right-2 bg-black/50 p-1.5 rounded-full text-white hover:bg-black/70"><RefreshCw className="w-4 h-4" /></button>}
-                                                </div>
-                                                {mealLogs[activeMeal].result && (
-                                                    <div className="bg-white text-slate-800 rounded-lg p-4 shadow-sm">
-                                                        <h4 className="font-bold text-lg mb-1 border-b border-slate-100 pb-2 flex justify-between">{mealLogs[activeMeal].result.name}<span className="text-emerald-600 font-extrabold">{mealLogs[activeMeal].result.calories} kcal</span></h4>
-                                                        <div className="grid grid-cols-3 gap-2 my-3 text-center">
-                                                            <div className="bg-red-50 p-2 rounded"><p className="text-[10px] text-red-500 font-bold">PRO</p><p className="font-bold text-red-700">{mealLogs[activeMeal].result.protein}g</p></div>
-                                                            <div className="bg-yellow-50 p-2 rounded"><p className="text-[10px] text-yellow-500 font-bold">FAT</p><p className="font-bold text-yellow-700">{mealLogs[activeMeal].result.fat}g</p></div>
-                                                            <div className="bg-blue-50 p-2 rounded"><p className="text-[10px] text-blue-500 font-bold">CARB</p><p className="font-bold text-blue-700">{mealLogs[activeMeal].result.carbs}g</p></div>
-                                                        </div>
-                                                        <div className="bg-slate-50 p-3 rounded text-sm text-slate-600 flex gap-2 items-start"><Sparkles className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" /><p className="text-xs">{mealLogs[activeMeal].result.advice}</p></div>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        )}
+                                        {mealLogs[activeMeal].skipped ? (<div className="bg-black/20 rounded-lg p-6 flex flex-col items-center justify-center text-center"><Ban className="w-10 h-10 text-white/50 mb-2" /><p className="font-bold text-white">欠食 (Skipped)</p><button onClick={() => handleResetMeal(activeMeal)} className="mt-2 bg-white/20 text-xs px-4 py-2 rounded-full flex items-center gap-1"><Undo2 className="w-3 h-3" /> 取消</button></div>) : !mealLogs[activeMeal].image ? (<div className="space-y-3"><button onClick={() => fileInputRef.current.click()} className="w-full bg-white/10 hover:bg-white/20 border-2 border-dashed border-white/30 rounded-lg p-6 flex flex-col items-center justify-center"><Camera className="w-8 h-8 mb-2 text-white/80" /><span className="text-sm font-bold">写真を撮る</span><input type="file" ref={fileInputRef} accept="image/*" className="hidden" onChange={handleImageUpload} /></button><button onClick={() => handleSkipMeal(activeMeal)} className="w-full text-white/60 text-xs py-2 flex items-center justify-center gap-1"><Ban className="w-3 h-3" /> 欠食記録</button></div>) : (<div className="space-y-4"><div className="relative rounded-lg overflow-hidden h-40 bg-black/20 flex items-center justify-center"><img src={mealLogs[activeMeal].image} alt="Food" className="h-full w-full object-cover opacity-90" />{analyzing ? <div className="absolute inset-0 bg-black/40 flex flex-col items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-white mb-2" /><span className="text-sm font-bold">AI分析中...</span></div> : <button onClick={() => handleResetMeal(activeMeal)} className="absolute top-2 right-2 bg-black/50 p-1.5 rounded-full text-white hover:bg-black/70"><RefreshCw className="w-4 h-4" /></button>}</div>{mealLogs[activeMeal].result && (<div className="bg-white text-slate-800 rounded-lg p-4 shadow-sm"><h4 className="font-bold text-lg mb-1 border-b border-slate-100 pb-2 flex justify-between">{mealLogs[activeMeal].result.name}<span className="text-emerald-600 font-extrabold">{mealLogs[activeMeal].result.calories} kcal</span></h4><div className="grid grid-cols-3 gap-2 my-3 text-center"><div className="bg-red-50 p-2 rounded"><p className="text-[10px] text-red-500 font-bold">PRO</p><p className="font-bold text-red-700">{mealLogs[activeMeal].result.protein}g</p></div><div className="bg-yellow-50 p-2 rounded"><p className="text-[10px] text-yellow-500 font-bold">FAT</p><p className="font-bold text-yellow-700">{mealLogs[activeMeal].result.fat}g</p></div><div className="bg-blue-50 p-2 rounded"><p className="text-[10px] text-blue-500 font-bold">CARB</p><p className="font-bold text-blue-700">{mealLogs[activeMeal].result.carbs}g</p></div></div><div className="bg-slate-50 p-3 rounded text-sm text-slate-600 flex gap-2 items-start"><Sparkles className="w-4 h-4 text-yellow-500 flex-shrink-0 mt-0.5" /><p className="text-xs">{mealLogs[activeMeal].result.advice}</p></div></div>)}</div>)}
                                     </div>
                                 </section>
 
-                                {/* Check List */}
-                                <section className={`bg-white rounded-xl shadow-md p-5 border border-slate-100 transition-opacity ${dailyCheckIn.isFinished ? 'opacity-75 pointer-events-none' : ''}`}>
+                                <section className={`bg-white rounded-xl shadow-md p-5 border border-slate-100 transition-opacity ${dailyData.isFinished ? 'opacity-75 pointer-events-none' : ''}`}>
                                     <h3 className="font-bold text-lg text-slate-700 mb-4 flex items-center gap-2"><Trophy className="w-5 h-5 text-yellow-500" /> 完了報告</h3>
                                     <div className="space-y-3">
-                                        <button onClick={() => toggleTask('meal')} className={`w-full p-4 rounded-lg border transition-all flex items-center gap-3 text-left ${dailyCheckIn.tasks.meal ? 'bg-emerald-50 border-emerald-500' : 'bg-white hover:border-emerald-300'}`}>
-                                            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${dailyCheckIn.tasks.meal ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300'}`}>{dailyCheckIn.tasks.meal && <CheckCircle className="w-4 h-4 text-white" />}</div>
-                                            <div><span className={`block text-sm ${dailyCheckIn.tasks.meal ? 'text-emerald-900 font-bold' : 'text-slate-700 font-medium'}`}>食事ルールを守った</span></div>
-                                        </button>
-                                        <button onClick={() => toggleTask('workout')} className={`w-full p-4 rounded-lg border transition-all flex items-center gap-3 text-left ${dailyCheckIn.tasks.workout ? 'bg-blue-50 border-blue-500' : 'bg-white hover:border-blue-300'}`}>
-                                            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${dailyCheckIn.tasks.workout ? 'bg-blue-500 border-blue-500' : 'border-slate-300'}`}>{dailyCheckIn.tasks.workout && <CheckCircle className="w-4 h-4 text-white" />}</div>
-                                            <div><span className={`block text-sm ${dailyCheckIn.tasks.workout ? 'text-blue-900 font-bold' : 'text-slate-700 font-medium'}`}>ノルマ達成: {plan.workout}</span></div>
-                                        </button>
-                                        <button onClick={() => toggleTask('sleep')} className={`w-full p-4 rounded-lg border transition-all flex items-center gap-3 text-left ${dailyCheckIn.tasks.sleep ? 'bg-indigo-50 border-indigo-500' : 'bg-white hover:border-indigo-300'}`}>
-                                            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${dailyCheckIn.tasks.sleep ? 'bg-indigo-500 border-indigo-500' : 'border-slate-300'}`}>{dailyCheckIn.tasks.sleep && <CheckCircle className="w-4 h-4 text-white" />}</div>
-                                            <div><span className={`block text-sm ${dailyCheckIn.tasks.sleep ? 'text-indigo-900 font-bold' : 'text-slate-700 font-medium'}`}>就寝準備OK</span></div>
+                                        <button onClick={() => toggleTask('meal')} className={`w-full p-4 rounded-lg border transition-all flex items-center gap-3 text-left ${dailyData.tasks.meal ? 'bg-emerald-50 border-emerald-500' : 'bg-white hover:border-emerald-300'}`}><div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${dailyData.tasks.meal ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300'}`}>{dailyData.tasks.meal && <CheckCircle className="w-4 h-4 text-white" />}</div><div><span className={`block text-sm ${dailyData.tasks.meal ? 'text-emerald-900 font-bold' : 'text-slate-700 font-medium'}`}>食事ルールを守った</span></div></button>
+                                        <button onClick={() => toggleTask('workout')} className={`w-full p-4 rounded-lg border transition-all flex items-center gap-3 text-left ${dailyData.tasks.workout ? 'bg-blue-50 border-blue-500' : 'bg-white hover:border-blue-300'}`}><div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${dailyData.tasks.workout ? 'bg-blue-500 border-blue-500' : 'border-slate-300'}`}>{dailyData.tasks.workout && <CheckCircle className="w-4 h-4 text-white" />}</div><div><span className={`block text-sm ${dailyData.tasks.workout ? 'text-blue-900 font-bold' : 'text-slate-700 font-medium'}`}>ノルマ達成: {plan.workout}</span></div></button>
+                                        <button onClick={() => toggleTask('sleep')} className={`w-full p-4 rounded-lg border transition-all flex items-center gap-3 text-left ${dailyData.tasks.sleep ? 'bg-indigo-50 border-indigo-500' : 'bg-white hover:border-indigo-300'}`}>
+                                            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${dailyData.tasks.sleep ? 'bg-indigo-500 border-indigo-500' : 'border-slate-300'}`}>{dailyData.tasks.sleep && <CheckCircle className="w-4 h-4 text-white" />}</div><div><span className={`block text-sm ${dailyData.tasks.sleep ? 'text-indigo-900 font-bold' : 'text-slate-700 font-medium'}`}>就寝準備OK</span></div>
                                         </button>
                                     </div>
                                 </section>
 
-                                {/* Finish Button / Result */}
-                                {!dailyCheckIn.isFinished ? (
-                                    <div className="pt-2 pb-6">
-                                        <button onClick={handleFinishDay} disabled={finishing} className={`w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all active:scale-95 ${finishing ? 'opacity-70 cursor-wait' : 'hover:bg-slate-700'}`}>
-                                            {finishing ? <><Loader2 className="w-5 h-5 animate-spin" /> 作成中...</> : <><CheckCircle className="w-5 h-5" /> 1日を終了して報告</>}
-                                        </button>
-                                        <p className="text-center text-xs text-slate-400 mt-2">※確定するとコメントと応援イラストが届きます</p>
-                                    </div>
+                                {!dailyData.isFinished ? (
+                                    <div className="pt-2 pb-6"><button onClick={handleFinishDay} disabled={finishing} className={`w-full bg-slate-800 text-white font-bold py-4 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all active:scale-95 ${finishing ? 'opacity-70 cursor-wait' : 'hover:bg-slate-700'}`}>{finishing ? <><Loader2 className="w-5 h-5 animate-spin" /> 作成中...</> : <><CheckCircle className="w-5 h-5" /> 1日を終了して報告</>}</button><p className="text-center text-xs text-slate-400 mt-2">※確定するとコメントと応援イラストが届きます</p></div>
                                 ) : (
                                     <div className="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl shadow-xl p-6 text-white mb-6 animate-in zoom-in-95 duration-500">
                                         <div className="flex items-center gap-2 mb-4"><Award className="w-8 h-8 text-yellow-300" /><div><h3 className="font-bold text-xl">Good Job!</h3><p className="text-xs text-indigo-100 opacity-90">活動記録を保存しました</p></div></div>
-                                        <div className="bg-white/10 rounded-lg p-4 backdrop-blur-sm border border-white/20 relative mb-4">
-                                            <div className="absolute -top-3 -left-2 bg-yellow-400 text-slate-900 text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm">INSTRUCTOR'S COMMENT</div>
-                                            <div className="flex gap-3"><div className="w-10 h-10 rounded-full bg-slate-200 border-2 border-white flex items-center justify-center flex-shrink-0 text-2xl overflow-hidden">👨‍🏫</div><p className="text-sm leading-relaxed font-medium">{dailyCheckIn.dailyFeedback}</p></div>
-                                        </div>
-                                        {dailyCheckIn.dailyImage ? (
-                                            <div className="rounded-lg overflow-hidden border-4 border-white/20 shadow-lg relative"><img src={dailyCheckIn.dailyImage} alt="Reward" className="w-full h-auto object-cover" /><div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-3"><p className="text-xs text-white font-bold flex items-center gap-1"><ImageIcon className="w-3 h-3" /> AI Generated Reward (Imagen 4)</p></div></div>
-                                        ) : (
-                                            <div className="bg-white/5 rounded-lg h-32 flex flex-col items-center justify-center text-white/50 border border-dashed border-white/20"><ImageIcon className="w-8 h-8 mb-1 opacity-50" /><span className="text-xs">No image (保存されません)</span></div>
-                                        )}
+                                        <div className="bg-white/10 rounded-lg p-4 backdrop-blur-sm border border-white/20 relative mb-4"><div className="absolute -top-3 -left-2 bg-yellow-400 text-slate-900 text-[10px] font-bold px-2 py-0.5 rounded-full shadow-sm">INSTRUCTOR'S COMMENT</div><div className="flex gap-3"><div className="w-10 h-10 rounded-full bg-slate-200 border-2 border-white flex items-center justify-center flex-shrink-0 text-2xl overflow-hidden">👨‍🏫</div><p className="text-sm leading-relaxed font-medium">{dailyData.dailyFeedback}</p></div></div>
+                                        {dailyData.dailyImage ? (<div className="rounded-lg overflow-hidden border-4 border-white/20 shadow-lg relative"><img src={dailyData.dailyImage} alt="Reward" className="w-full h-auto object-cover" /><div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-3"><p className="text-xs text-white font-bold flex items-center gap-1"><ImageIcon className="w-3 h-3" /> AI Generated Reward (Imagen 4)</p></div></div>) : (<div className="bg-white/5 rounded-lg h-32 flex flex-col items-center justify-center text-white/50 border border-dashed border-white/20"><ImageIcon className="w-8 h-8 mb-1 opacity-50" /><span className="text-xs">No image (保存されません)</span></div>)}
                                         <div className="mt-4 flex justify-between items-center text-xs text-indigo-100"><span>明日もこの調子で！</span><div className="flex gap-1">{[1,2,3].map(i => <Star key={i} className="w-4 h-4 text-yellow-300 fill-yellow-300" />)}</div></div>
                                     </div>
                                 )}
 
-                                <div className="text-center pt-8 pb-4">
-                                    <button onClick={handleDailyReset} className="text-xs text-slate-300 flex items-center justify-center gap-1 mx-auto hover:text-red-400 transition-colors"><RefreshCw className="w-3 h-3" /> 今日の記録をリセット</button>
-                                </div>
+                                <div className="text-center pt-8 pb-4"><button onClick={handleDailyReset} className="text-xs text-slate-300 flex items-center justify-center gap-1 mx-auto hover:text-red-400 transition-colors"><RefreshCw className="w-3 h-3" /> 今日の記録をリセット</button></div>
                             </div>
                         )}
                     </main>
-                    <footer className="fixed bottom-0 w-full bg-white/90 backdrop-blur border-t border-slate-200 p-3 text-center text-[10px] text-slate-400 z-50">Professional Diet Instructor System v3.1 (Local)</footer>
+                    <footer className="fixed bottom-0 w-full bg-white/90 backdrop-blur border-t border-slate-200 p-3 text-center text-[10px] text-slate-400 z-50">Professional Diet Instructor System v3.2 (Cloud)</footer>
 
-                    {/* Settings Modal */}
                     {showSettings && (
                         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
                             <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
                                 <div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold flex items-center gap-2"><Settings className="w-5 h-5 text-slate-500" /> 設定</h3><button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button></div>
                                 <div className="space-y-4">
-                                    <div><label className="block text-sm font-bold text-slate-600 mb-1">Google Gemini APIキー</label><input type="password" value={tempApiKey} onChange={(e) => setTempApiKey(e.target.value)} className="w-full p-2 border rounded-lg text-sm" placeholder="AIzaSy..." /><p className="text-xs text-slate-400 mt-1">※設定はブラウザ内に保存されます。</p></div>
+                                    <div><label className="block text-sm font-bold text-slate-600 mb-1">Google Gemini APIキー</label><input type="password" value={tempApiKey} onChange={(e) => setTempApiKey(e.target.value)} className="w-full p-2 border rounded-lg text-sm" placeholder="AIzaSy..." /><p className="text-xs text-slate-400 mt-1">※設定はクラウドに保存され、他端末でも有効になります。</p></div>
                                     <button onClick={handleSaveApiKey} className="w-full bg-emerald-600 text-white font-bold py-2 rounded-lg">保存する</button>
-                                    <div className="pt-4 mt-4 border-t border-slate-100"><h4 className="text-xs font-bold text-slate-500 mb-2">危険な操作</h4><button onClick={() => { if(window.confirm('本当にすべてのデータを削除しますか？\nAPIキー、過去の履歴など全てが失われます。')) { localStorage.clear(); window.location.reload(); } }} className="w-full flex items-center justify-center gap-2 text-red-500 text-xs font-bold py-2 rounded-lg hover:bg-red-50 transition-colors"><Trash2 className="w-3 h-3" /> 全データを完全に削除する</button></div>
                                 </div>
                             </div>
                         </div>
