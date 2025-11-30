@@ -1,9 +1,9 @@
-    <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Diet Partner App (Cloud Sync & Debug)</title>
+    <title>Diet Partner App (Fixed)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Babel for JSX -->
@@ -37,56 +37,45 @@
 <body class="bg-slate-50">
     <div id="root"></div>
 
-    <!-- Firebase Setup -->
+    <!-- Firebase Setup (v10.13.1 Stable) -->
     <script type="module">
-        import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
-        import { getAuth, signInAnonymously, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
-        import { getFirestore } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-app.js';
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js';
+        import { getFirestore, collection, doc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js';
 
-        // =================================================================
-        // 【重要】ご自身の環境で使う場合は、以下の値を書き換えてください
-        // =================================================================
+        // 画像から読み取った設定値を適用済みです
         const myFirebaseConfig = {
-          apiKey: "AIzaSyBa2rDeNwHi5oy5xNY-fYwfqZUakmMnZgE",
-          authDomain: "diet-patner-app.firebaseapp.com",
-          projectId: "diet-patner-app",
-          storageBucket: "diet-patner-app.firebasestorage.app",
-          messagingSenderId: "507433854484",
-          appId: "1:507433854484:web:36372f9b7d16e6b4dc6901"
+            apiKey: "AIzaSyBa2rDeNWhI5oy5xNY-fyWfqZUkmmMnZgE",
+            authDomain: "diet-patner-app.firebaseapp.com",
+            projectId: "diet-patner-app",
+            storageBucket: "diet-patner-app.firebasestorage.app",
+            messagingSenderId: "507433854484",
+            appId: "1:507433854484:web:36372f9b7d16e6b4dc6901"
         };
-        // =================================================================
 
-        // 設定チェック
-        window.isConfigDefault = myFirebaseConfig.apiKey === "YOUR_API_KEY";
-
-        // プレビュー環境では自動提供される設定を使い、それ以外（ローカル等）では上記の設定を使います
-        const firebaseConfig = window.__firebase_config ? JSON.parse(window.__firebase_config) : myFirebaseConfig;
-        
-        // アプリID（Firestoreの保存パスに使われます）
-        const appId = window.__app_id || 'diet-partner-app';
-        const initialAuthToken = window.__initial_auth_token;
+        const appId = 'diet-partner-app'; 
+        // ※Firestore内の保存パスに使います。変更不要です。
 
         let app, auth, db;
-        let initError = null;
-
+        
         try {
-            app = initializeApp(firebaseConfig);
+            app = initializeApp(myFirebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
+            
+            // React側から参照できるようにグローバル公開
+            window.db = db;
+            window.auth = auth;
+            window.appId = appId;
+            window.signInWithCustomToken = signInWithCustomToken;
+            window.signInAnonymously = signInAnonymously;
+            window.firebaseLoaded = true; // 読み込み完了フラグ
+            
+            console.log("Firebase initialized successfully");
         } catch (e) {
-            console.error("Firebase initialization failed.", e);
-            initError = e.message;
+            console.error("Firebase initialization failed:", e);
+            window.firebaseInitError = e.message;
         }
-
-        // Reactコンポーネントからアクセスできるようにwindowに公開
-        window.db = db;
-        window.auth = auth;
-        window.appId = appId;
-        window.initialAuthToken = initialAuthToken;
-        window.signInWithCustomToken = signInWithCustomToken;
-        window.signInAnonymously = signInAnonymously;
-        window.firebaseInitError = initError;
-        window.firebaseConfigUsed = firebaseConfig; // デバッグ用
     </script>
 
     <script type="text/babel" data-type="module">
@@ -99,9 +88,9 @@
             Undo2, Award, Star, Settings, X, Key, BrainCircuit, ImageIcon, Trash2, Cloud, CloudOff, AlertTriangle, Terminal
         } from 'lucide-react';
 
-        // Firebase modules from CDN
-        import { onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
-        import { doc, setDoc, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+        // Firebase modules imports for usage inside React
+        import { onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js';
+        import { doc, setDoc, onSnapshot, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js';
 
         // ロードマップに基づくベースプラン
         const WEEKLY_PLAN_BASE = {
@@ -212,10 +201,12 @@
                 return WEEKLY_PLAN_BASE[today.getDay()];
             }, [today, aiPlan]);
 
-            // 認証と初期化
+            // 認証と初期化 (Wait Loop付き)
             useEffect(() => {
-                const initAuth = async () => {
-                    const { auth, initialAuthToken, signInWithCustomToken, signInAnonymously, firebaseInitError } = window;
+                let attempts = 0;
+                
+                const tryInitAuth = async () => {
+                    const { auth, signInAnonymously, firebaseLoaded, firebaseInitError } = window;
                     
                     if (firebaseInitError) {
                         addLog(`Firebase Init Error: ${firebaseInitError}`, 'error');
@@ -224,8 +215,13 @@
                         return;
                     }
 
-                    if (!auth) {
-                        addLog("Auth module not found.", 'error');
+                    if (!auth || !firebaseLoaded) {
+                        if (attempts < 10) {
+                            attempts++;
+                            setTimeout(tryInitAuth, 500); // 0.5秒後に再試行
+                            return;
+                        }
+                        addLog("Firebase Auth module not loaded (Timeout). Check network or config.", 'error');
                         setSyncError(true);
                         setLoading(false);
                         return;
@@ -233,35 +229,35 @@
 
                     try {
                         addLog("Authenticating...");
-                        if (initialAuthToken) {
-                            await signInWithCustomToken(auth, initialAuthToken);
-                            addLog("Signed in with custom token.");
-                        } else {
-                            await signInAnonymously(auth);
-                            addLog("Signed in anonymously.");
-                        }
+                        await signInAnonymously(auth);
+                        addLog("Signed in anonymously.");
                     } catch (error) {
                         addLog(`Auth Failed: ${error.message}`, 'error');
                         setSyncError(true);
                         setLoading(false);
                     }
                 };
-                initAuth();
+                
+                tryInitAuth();
 
-                if (window.auth) {
-                    const unsubscribe = onAuthStateChanged(window.auth, (currentUser) => {
-                        setUser(currentUser);
-                        if (currentUser) {
-                            addLog(`User: ${currentUser.uid}`);
-                        } else {
-                            addLog("User logged out or null.");
-                            setLoading(false);
-                        }
-                    });
-                    return () => unsubscribe();
-                } else {
-                    setLoading(false);
-                }
+                // 認証状態リスナーの設定もリトライする
+                const setupListener = () => {
+                    if (window.auth) {
+                        onAuthStateChanged(window.auth, (currentUser) => {
+                            setUser(currentUser);
+                            if (currentUser) {
+                                addLog(`User: ${currentUser.uid}`);
+                            } else {
+                                addLog("User logged out or null.");
+                                setLoading(false);
+                            }
+                        });
+                    } else if (attempts < 15) {
+                        setTimeout(setupListener, 500);
+                    }
+                };
+                setupListener();
+
             }, []);
 
             // Firestore 同期
@@ -541,12 +537,6 @@
                     </header>
 
                     <main className="max-w-md mx-auto px-4 -mt-4 relative z-20">
-                        {window.isConfigDefault && (
-                            <div className="mb-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative">
-                                <strong className="font-bold">設定未完了: </strong>
-                                <span className="block sm:inline text-xs">HTMLファイル内の <code>myFirebaseConfig</code> を書き換えてください。</span>
-                            </div>
-                        )}
                         {!dailyData.isCheckedIn ? (
                             <div className="bg-white rounded-xl shadow-xl p-6 mb-6 border border-slate-100">
                                 <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700"><Scale className="w-5 h-5 text-blue-500" /> モーニング・チェックイン</h2>
@@ -616,7 +606,7 @@
                             </div>
                         )}
                     </main>
-                    <footer className="fixed bottom-0 w-full bg-white/90 backdrop-blur border-t border-slate-200 p-3 text-center text-[10px] text-slate-400 z-50">Professional Diet Instructor System v3.2 (Cloud)</footer>
+                    <footer className="fixed bottom-0 w-full bg-white/90 backdrop-blur border-t border-slate-200 p-3 text-center text-[10px] text-slate-400 z-50">Professional Diet Instructor System v3.3 (Cloud)</footer>
 
                     {/* Settings Modal */}
                     {showSettings && (
@@ -660,4 +650,3 @@
     </script>
 </body>
 </html>
-
