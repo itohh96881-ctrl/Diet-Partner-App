@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Diet Partner App (Debug Edition)</title>
+    <title>Diet Partner App (Fixed Config)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Babel for JSX -->
@@ -43,9 +43,9 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-auth.js';
         import { getFirestore, collection, doc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore.js';
 
-        // 画像から読み取った設定値を適用済みです
+        // ユーザーから提供された正しい設定値を反映
         const myFirebaseConfig = {
-            apiKey: "AIzaSyBa2rDeNWhI5oy5xNY-fyWfqZUkmmMnZgE",
+            apiKey: "AIzaSyBa2rDeNwHi5oy5xNY-fYwfqZUakmMnZgE",
             authDomain: "diet-patner-app.firebaseapp.com",
             projectId: "diet-patner-app",
             storageBucket: "diet-patner-app.firebasestorage.app",
@@ -54,7 +54,6 @@
         };
 
         const appId = 'diet-partner-app'; 
-        // ※Firestore内の保存パスに使います。変更不要です。
 
         // プレビュー環境かローカルかを判定して設定を選択
         const firebaseConfig = window.__firebase_config ? JSON.parse(window.__firebase_config) : myFirebaseConfig;
@@ -66,14 +65,13 @@
             auth = getAuth(app);
             db = getFirestore(app);
             
-            // React側から参照できるようにグローバル公開
             window.db = db;
             window.auth = auth;
             window.appId = appId;
             window.signInWithCustomToken = signInWithCustomToken;
             window.signInAnonymously = signInAnonymously;
-            window.firebaseLoaded = true; // 読み込み完了フラグ
-            window.firebaseConfigUsed = firebaseConfig; // デバッグ用に設定を保存
+            window.firebaseLoaded = true; 
+            window.firebaseConfigUsed = firebaseConfig;
             
             console.log("Firebase initialized successfully");
         } catch (e) {
