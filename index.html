@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Diet Partner App (Fixed)</title>
+    <title>Diet Partner App (Debug Edition)</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Babel for JSX -->
@@ -56,10 +56,13 @@
         const appId = 'diet-partner-app'; 
         // ※Firestore内の保存パスに使います。変更不要です。
 
+        // プレビュー環境かローカルかを判定して設定を選択
+        const firebaseConfig = window.__firebase_config ? JSON.parse(window.__firebase_config) : myFirebaseConfig;
+
         let app, auth, db;
         
         try {
-            app = initializeApp(myFirebaseConfig);
+            app = initializeApp(firebaseConfig);
             auth = getAuth(app);
             db = getFirestore(app);
             
@@ -70,6 +73,7 @@
             window.signInWithCustomToken = signInWithCustomToken;
             window.signInAnonymously = signInAnonymously;
             window.firebaseLoaded = true; // 読み込み完了フラグ
+            window.firebaseConfigUsed = firebaseConfig; // デバッグ用に設定を保存
             
             console.log("Firebase initialized successfully");
         } catch (e) {
@@ -206,13 +210,22 @@
                 let attempts = 0;
                 
                 const tryInitAuth = async () => {
-                    const { auth, signInAnonymously, firebaseLoaded, firebaseInitError } = window;
+                    const { auth, signInAnonymously, firebaseLoaded, firebaseInitError, firebaseConfigUsed } = window;
                     
                     if (firebaseInitError) {
                         addLog(`Firebase Init Error: ${firebaseInitError}`, 'error');
                         setSyncError(true);
                         setLoading(false);
                         return;
+                    }
+
+                    // 設定されているAPIキーをログに出力（デバッグ用）
+                    if (firebaseConfigUsed) {
+                        const maskedKey = firebaseConfigUsed.apiKey ? firebaseConfigUsed.apiKey.substring(0, 5) + "..." : "undefined";
+                        addLog(`API Key used: ${maskedKey}`);
+                        if (maskedKey === "YOUR_...") {
+                            addLog("Error: Default API Key detected. Please update config.", 'error');
+                        }
                     }
 
                     if (!auth || !firebaseLoaded) {
@@ -537,6 +550,12 @@
                     </header>
 
                     <main className="max-w-md mx-auto px-4 -mt-4 relative z-20">
+                        {window.isConfigDefault && (
+                            <div className="mb-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative">
+                                <strong className="font-bold">設定未完了: </strong>
+                                <span className="block sm:inline text-xs">HTMLファイル内の <code>myFirebaseConfig</code> を書き換えてください。</span>
+                            </div>
+                        )}
                         {!dailyData.isCheckedIn ? (
                             <div className="bg-white rounded-xl shadow-xl p-6 mb-6 border border-slate-100">
                                 <h2 className="text-lg font-bold mb-4 flex items-center gap-2 text-slate-700"><Scale className="w-5 h-5 text-blue-500" /> モーニング・チェックイン</h2>
