@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Activity, TrendingDown, Cloud, CloudOff, Loader2, Settings } from 'lucide-react';
 import { auth, db, signInAnonymously, onAuthStateChanged, doc, setDoc, onSnapshot, appId } from './lib/firebase';
-import { WEEKLY_PLAN_BASE, INITIAL_GOAL } from './data/constants';
+import { WEEKLY_PLAN_BASE, INITIAL_GOAL, AI_CONFIG } from './data/constants';
 import SimpleChart from './components/SimpleChart';
 import DailyCheckIn from './components/DailyCheckIn';
 import WeeklyPlan from './components/WeeklyPlan';
@@ -203,7 +203,7 @@ function App() {
     const dayOfWeek = ['日', '月', '火', '水', '木', '金', '土'][today.getDay()];
     const recentHistory = history.slice(-3).map(h => `- ${new Date(h.date).toLocaleDateString()}: ${h.weight}kg`).join('\n');
     const prompt = `ダイエットインストラクターとして、今日の最適プランをJSONで作成。目標65kg/15%。現在${status.weight}kg。${dayOfWeek}, 睡眠${sleep}h。履歴:${recentHistory}。睡眠不足時は休息優先。JSON:{ "day": "${dayOfWeek}", "title": "テーマ", "type": "rest/home/gym/cardio/adjustment", "targetCalories": 1800, "workout": "指示", "workoutDetail": "詳細", "sleepAdvice": "睡眠", "dietDetail": {"breakfast":"", "lunch":"", "dinner":"", "focus":""}, "color": "bg-indigo-100 border-indigo-500 text-indigo-800" }`;
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${profile.apiKey}`;
+    const url = `${AI_CONFIG.BASE_URL}/${AI_CONFIG.TEXT_MODEL}:generateContent?key=${profile.apiKey}`;
     try {
       const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }) });
       const data = await res.json();
@@ -266,7 +266,7 @@ function App() {
     const mimeType = base64Image.match(/data:([^;]+);/)?.[1] || "image/jpeg";
     const base64Data = base64Image.split(',')[1];
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${profile.apiKey}`;
+    const url = `${AI_CONFIG.BASE_URL}/${AI_CONFIG.TEXT_MODEL}:generateContent?key=${profile.apiKey}`;
 
     const promptText = `
         この料理画像を分析し、以下の情報をJSON形式のみで出力してください。
@@ -343,8 +343,8 @@ function App() {
 
     setFinishing(true);
     const textPrompt = `ダイエットコーチとしてフィードバック(100文字)。目標65kg, 現在${profile.weight}kg, 摂取${totalCalories}/${plan.targetCalories}kcal, 達成:食${dailyData.tasks.meal ? 1 : 0}/運${dailyData.tasks.workout ? 1 : 0}/睡${dailyData.tasks.sleep ? 1 : 0}`;
-    const textUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${profile.apiKey}`;
-    const imageUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key=${profile.apiKey}`;
+    const textUrl = `${AI_CONFIG.BASE_URL}/${AI_CONFIG.TEXT_MODEL}:generateContent?key=${profile.apiKey}`;
+    const imageUrl = `${AI_CONFIG.BASE_URL}/${AI_CONFIG.IMAGE_MODEL}:predict?key=${profile.apiKey}`;
 
     let feedback = "お疲れ様！";
     let image = null;
