@@ -197,7 +197,7 @@ function App() {
     setProfile(prev => ({ ...prev, [name]: parseFloat(value) }));
   };
 
-  const generateDailyPlan = async (status, sleep) => {
+  const generateDailyPlan = async (status, sleep, latestDailyData) => {
     if (!profile.apiKey) return;
     setIsPlanLoading(true);
     const dayOfWeek = ['日', '月', '火', '水', '木', '金', '土'][today.getDay()];
@@ -210,7 +210,7 @@ function App() {
       if (data.candidates) {
         const plan = JSON.parse(data.candidates[0].content.parts[0].text.replace(/```json|```/g, '').trim());
         setAiPlan(plan);
-        saveDailyData(dailyData, mealLogs, plan);
+        saveDailyData(latestDailyData || dailyData, mealLogs, plan);
       }
     } catch (e) {
       addLog(`Plan Gen Error: ${e.message}`, 'error');
@@ -234,7 +234,7 @@ function App() {
     setDailyData(newCheckIn);
     saveDailyData(newCheckIn, mealLogs, aiPlan);
 
-    if (profile.apiKey) await generateDailyPlan(profile, dailyData.sleepHours);
+    if (profile.apiKey) await generateDailyPlan(profile, dailyData.sleepHours, newCheckIn);
   };
 
   const toggleTask = (taskName) => {
