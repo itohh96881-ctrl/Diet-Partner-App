@@ -11,7 +11,12 @@ export const WEEKLY_PLAN_BASE = {
 export const INITIAL_GOAL = { weight: 65.0, bfp: 15.0, startWeight: 84.6, startBfp: 20.4 };
 
 export const AI_CONFIG = {
-    TEXT_MODEL: "gemini-2.0-flash-exp",
+    // Gemini 1.5 Flash: Latest, fastest, and most cost-effective multimodal model.
+    // Ideal for daily meal analysis and plan generation.
+    TEXT_MODEL: "gemini-1.5-flash",
+
+    // Imagen 3: Latest high-quality image generation model.
     IMAGE_MODEL: "imagen-3.0-generate-001",
+
     BASE_URL: "https://generativelanguage.googleapis.com/v1beta/models"
 };
